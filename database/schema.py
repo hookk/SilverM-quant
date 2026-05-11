@@ -636,9 +636,14 @@ CREATE TABLE IF NOT EXISTS dwd_stock_info (
     list_date DATE,
     is_hs VARCHAR,
     act_name VARCHAR,
+    list_status VARCHAR,
+    delist_date DATE,
     data_source VARCHAR DEFAULT 'tushare'
 );
 """
+
+
+
 
 CREATE_DWD_TRADE_CALENDAR_TABLE = """
 CREATE TABLE IF NOT EXISTS dwd_trade_calendar (
