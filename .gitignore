@@ -3,3 +3,11 @@
 *.pyc
 __pycache__/
 logs/
+
+# 数据库文件（本地数据，不提交）
+*.duckdb
+*.db
+data/*.duckdb
+
+# 回测结果图片（可选）
+results/
