@@ -17,17 +17,38 @@
 #   dwd_daily_basic      (trade_date, ts_code, pe_ttm, pb, total_mv, circ_mv, turn_rate, ...)
 # ============================================================
 
-# ── 3-Segment Data Split ─────────────────────────────────────────────────────
+# ── 4-Segment Data Split ─────────────────────────────────────────────────────
+# Design rationale (Issue #2 anti-overfit):
+#   - Train:          Reserved; not currently fed to Optuna to avoid overfitting
+#   - Valid-Search:   Covers 2022 bear + 2023 weak + 2024-2025Q1 — forces signals
+#                     to work across multiple market regimes (temporal CV here)
+#   - Valid-Holdout:  Independent gate; Optuna never sees this data
+#   - Test:           Completely unseen; human-only, never exposed to Agent
+#
+# IMPORTANT: Config key changed from 'valid' → 'valid_search' + 'valid_holdout'.
+# All code that previously read splits.valid must now read splits.valid_search.
 splits:
   train:
     start: "2018-01-01"
-    end:   "2023-12-31"
-    description: "Agent exploration — full access"
+    end:   "2021-12-31"
+    description: "Reserved train set (4 years). Not currently used by Optuna."
 
-  valid:
-    start: "2024-01-01"
+  valid_search:
+    start: "2022-01-01"
+    end:   "2025-03-31"
+    description: >
+      Optuna temporal-CV search window (27 months / 9 quarters).
+      Covers A-share bear market (2022, -15%), weak recovery (2023),
+      and bull phase (2024). Signals must generalise across regimes.
+
+  valid_holdout:
+    start: "2025-04-01"
     end:   "2025-09-30"
-    description: "Optimization feedback — L2 granularity (quarterly/industry/cap)"
+    description: >
+      Independent holdout gate (6 months). Optuna best_params are validated
+      here AFTER search. Only passes if: holdout signals ≥ 15,
+      holdout T+5 Sharpe > 0, and valid_search/holdout Sharpe ratio < 5.
+      Results are visible to human but NOT detail-exposed to Agent.
 
   test:
     start: "2025-10-01"
@@ -140,12 +161,28 @@ evaluation:
     small: 20
     mid:   200
 
+# ── Holdout Gate Config ───────────────────────────────────────────────────────
+# Applied AFTER Optuna search on valid_search data.
+# All three conditions must pass; failure = holdout_rejected, best NOT updated.
+holdout_gate:
+  min_signals: 15               # minimum signal triggers on holdout period
+  min_sharpe:  0.0              # holdout T+5 Sharpe must be > this
+  max_overfit_ratio: 5.0        # valid_search Sharpe / holdout Sharpe < this
+
 # ── Resource Limits ───────────────────────────────────────────────────────────
 resources:
   subprocess_memory_limit_gb: 1
   subprocess_timeout_sec: 60
   orchestrator_pause_free_mem_gb: 2
-  optuna_n_trials: 50
+  # Reduced from 50→20 (Issue #2): lower search freedom reduces overfit risk
+  optuna_n_trials: 20
   optuna_direction: "maximize"
+  # Increased from 3→4 folds (Issue #2): longer valid_search window, finer CV
+  optuna_cv_folds: 4
+  # Increased from 30→80 (Issue #2): require statistical significance
+  optuna_min_signals: 80
+  # Sharpe cap (Issue #2): truncate Sharpe > 3.0 to discourage extreme params
+  optuna_sharpe_cap: 3.0
+  optuna_sharpe_cap_discount: 0.1   # (x - cap) * discount + cap
   max_iterations_default: 100
   memory_compress_every_n: 10

@@ -10,6 +10,7 @@ import BacktestDashboard from '../views/BacktestDashboard.vue'
 import StrategyManagement from '../views/StrategyManagement.vue'
 import TradingSignalsView from '../views/TradingSignalsView.vue'
 import HistoryAnalysisView from '../views/HistoryAnalysisView.vue'
+import EvolutionDashboard from '../views/EvolutionDashboard.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -73,6 +74,11 @@ const router = createRouter({
       path: '/history-analysis',
       name: 'history-analysis',
       component: HistoryAnalysisView
+    },
+    {
+      path: '/evolution',
+      name: 'evolution',
+      component: EvolutionDashboard
     }
   ]
 })

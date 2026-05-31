@@ -21,15 +21,21 @@ Manages the on-disk memory structure for each evolving signal:
 
 Iteration JSON schema:
     {
-      "iteration":   int,
-      "hypothesis":  str,       # what the Agent claimed to be testing
-      "code_path":   str,       # relative path to code file
-      "train_metrics": dict,    # L1 metrics on Train set
-      "valid_metrics": dict,    # L1 metrics on Valid set
-      "best_params": dict,      # Optuna best params
-      "conclusion":  str,       # Agent's self-assessment
-      "notes":       str,       # orchestrator-added notes
-      "timestamp":   str,       # ISO-8601
+      "iteration":          int,
+      "hypothesis":         str,   # what the Agent claimed to be testing
+      "code_path":          str,   # relative path to code file
+      "train_metrics":      dict,  # L1 metrics on Train set
+      "valid_metrics":      dict,  # L1 metrics on Valid-Search set (Optuna CV)
+      "valid_search_score": float, # Optuna best_score (capped CV Sharpe)
+      "best_params":        dict,  # Optuna best params
+      "holdout_passed":     bool,  # True = passed holdout gate; False = rejected
+      "holdout_score":      float, # holdout T+5 Sharpe (or null if not run)
+      "rejection_reason":   str,   # why holdout was rejected (empty if passed)
+      "total_signals_search":  int,   # signal triggers in valid_search
+      "total_signals_holdout": int,   # signal triggers in valid_holdout
+      "conclusion":         str,   # Agent's self-assessment
+      "notes":              str,   # orchestrator-added notes
+      "timestamp":          str,   # ISO-8601
     }
 
 Key methods:
@@ -217,11 +223,17 @@ class MemoryManager:
         record.setdefault("timestamp",     _now_iso())
         record.setdefault("hypothesis",    "")
         record.setdefault("code_path",     str(self._code_path(name, iteration)))
-        record.setdefault("train_metrics", {})
-        record.setdefault("valid_metrics", {})
-        record.setdefault("best_params",   {})
-        record.setdefault("conclusion",    "")
-        record.setdefault("notes",         "")
+        record.setdefault("train_metrics",         {})
+        record.setdefault("valid_metrics",         {})
+        record.setdefault("valid_search_score",    None)   # capped CV Sharpe from Optuna
+        record.setdefault("best_params",           {})
+        record.setdefault("holdout_passed",        None)  # None=gate not run, True/False=result
+        record.setdefault("holdout_score",         None)  # holdout T+5 Sharpe
+        record.setdefault("rejection_reason",      "")    # reason if holdout_passed=False
+        record.setdefault("total_signals_search",  None)  # signal count on valid_search
+        record.setdefault("total_signals_holdout", None)  # signal count on valid_holdout
+        record.setdefault("conclusion",            "")
+        record.setdefault("notes",                 "")
 
         path = self._iter_path(name, iteration)
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -342,29 +354,46 @@ class MemoryManager:
 
     def update_best(self, name: str, record: Dict[str, Any]) -> bool:
         """
-        Update best_result.json if the new record's valid score is higher.
+        Update best_result.json if the new record's holdout score is higher.
+
+        Score priority (Issue #2 anti-overfit):
+          1. holdout_score (T+5 Sharpe on independent holdout period) — preferred
+          2. valid_metrics.primary (valid_search CV Sharpe) — fallback
+
+        Only records where holdout_passed=True (or holdout_passed=None, meaning
+        the gate was not run) are considered for best update.
 
         Args:
             name:   Signal name.
-            record: Iteration record (must contain valid_metrics.primary).
+            record: Iteration record (must contain holdout_score or valid_metrics.primary).
 
         Returns:
             True if this record became the new best; False if existing best kept.
         """
         self._best_dir(name).mkdir(parents=True, exist_ok=True)
-        new_score = _extract_primary(record)
+
+        # Holdout-rejected records never become best
+        holdout_passed = record.get("holdout_passed")
+        if holdout_passed is False:
+            logger.debug(
+                "update_best: '%s' iter %d holdout_rejected — not updating best",
+                name, record.get("iteration", -1),
+            )
+            return False
+
+        new_score = _extract_score_for_best(record)
         best_path = self._best_path(name)
 
         if best_path.exists():
             existing = json.loads(best_path.read_text(encoding="utf-8"))
-            existing_score = _extract_primary(existing)
-            if not (np.isnan(existing_score) if _is_nan(existing_score) else False):
+            existing_score = _extract_score_for_best(existing)
+            if not _is_nan(existing_score):
                 if not _is_nan(new_score) and new_score > existing_score:
                     best_path.write_text(
                         json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
                     logger.info(
-                        "update_best: '%s' new best score=%.4f (was %.4f, iter %d)",
+                        "update_best: '%s' new best holdout_score=%.4f (was %.4f, iter %d)",
                         name, new_score, existing_score, record.get("iteration", -1),
                     )
                     return True
@@ -612,14 +641,43 @@ def _now_iso() -> str:
 
 
 def _extract_primary(record: Optional[Dict[str, Any]]) -> float:
+    """Extract valid_search CV primary score (used for compress_summary display)."""
     if not record:
         return float("nan")
+    # Try valid_search_score first (new schema), fall back to valid_metrics.primary
+    vss = record.get("valid_search_score")
+    if vss is not None:
+        try:
+            return float(vss)
+        except (TypeError, ValueError):
+            pass
     vm = record.get("valid_metrics", {})
     v  = vm.get("primary", float("nan"))
     try:
         return float(v)
     except (TypeError, ValueError):
         return float("nan")
+
+
+def _extract_score_for_best(record: Optional[Dict[str, Any]]) -> float:
+    """
+    Extract the score used for best-iteration comparison.
+
+    Priority (Issue #2 anti-overfit):
+      1. holdout_score   — reflects generalisation ability
+      2. valid_search_score / valid_metrics.primary — fallback when gate not run
+    """
+    if not record:
+        return float("nan")
+    hs = record.get("holdout_score")
+    if hs is not None:
+        try:
+            f = float(hs)
+            if not _is_nan(f):
+                return f
+        except (TypeError, ValueError):
+            pass
+    return _extract_primary(record)
 
 
 def _is_nan(v: Any) -> bool:

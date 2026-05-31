@@ -10,6 +10,7 @@ const navItems = [
   { path: '/backtest-dashboard', label: '回测仪表盘', icon: 'dashboard' },
   { path: '/agent', label: '多Agent分析', icon: 'agent' },
   { path: '/data-update', label: '数据更新', icon: 'database' },
+  { path: '/evolution', label: '进化系统', icon: '🧬' },
 ]
 
 const isActive = (path: string) => {

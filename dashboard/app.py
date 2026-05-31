@@ -3,6 +3,7 @@ import sys
 
 # 添加项目根目录到sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dashboard.evolution_api import evolution_bp
 
 from flask import Flask, render_template, jsonify, request, send_from_directory, g
 from flask_cors import CORS
@@ -29,6 +30,7 @@ CORS(app)
 app.register_blueprint(agent_bp)
 app.register_blueprint(data_update_bp)
 app.register_blueprint(backtest_bp)
+app.register_blueprint(evolution_bp)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'Astock3.duckdb')
 
