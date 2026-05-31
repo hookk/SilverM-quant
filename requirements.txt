@@ -40,4 +40,5 @@ python-dotenv>=1.0.0
 # 测试
 pytest>=7.4.0
 
-
+optuna>=3.0.0
+psutil>=5.9.0

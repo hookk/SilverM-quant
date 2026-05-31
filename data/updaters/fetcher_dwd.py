@@ -328,13 +328,64 @@ class DWDFetcher:
             db.close()
 
     def _get_trade_dates(self, start_date: str, end_date: str) -> List[str]:
-        """获取指定范围内的交易日列表（YYYYMMDD 格式）"""
+        """
+        获取指定范围内的交易日列表（YYYYMMDD 格式）。
+
+        策略：优先查 dwd_trade_calendar 库（已有数据则无需调用 API）；
+        库里没有数据时才调用 TushareTradeCalFetcher，并将结果写库以备后用。
+        """
+        # ---- 1. 优先查库 ----
+        start_fmt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+        end_fmt   = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+        try:
+            db = duckdb.connect(self.db_path)
+            try:
+                rows = db.execute(
+                    """
+                    SELECT trade_date FROM dwd_trade_calendar
+                    WHERE is_open = TRUE
+                      AND trade_date >= ?
+                      AND trade_date <= ?
+                      AND exchange = 'SSE'
+                    ORDER BY trade_date
+                    """,
+                    [start_fmt, end_fmt],
+                ).fetchall()
+            finally:
+                db.close()
+
+            if rows:
+                dates = [row[0] for row in rows]
+                # trade_date 可能是 date 对象或字符串，统一转为 YYYYMMDD
+                result = [
+                    (d.strftime('%Y%m%d') if hasattr(d, 'strftime') else str(d).replace('-', ''))
+                    for d in dates
+                ]
+                logger.info(f"从 dwd_trade_calendar 获取到 {len(result)} 个交易日")
+                return result
+        except Exception as e:
+            logger.warning(f"查询 dwd_trade_calendar 失败，降级到 API: {e}")
+
+        # ---- 2. 降级：调用 tushare API ----
+        logger.warning(f"dwd_trade_calendar 无数据，尝试从 tushare 获取: {start_date} ~ {end_date}")
         df = self.trade_cal_fetcher.fetch(
             start_date=start_date, end_date=end_date, exchange='SSE'
         )
         if df is None or df.empty:
             logger.warning(f"未获取到交易日历: {start_date} ~ {end_date}")
+            logger.warning("请先执行: python data/updaters/fetcher_dwd.py --data-type trade_calendar --start-date 20200101")
             return []
+
+        # 将 API 结果顺手写库，下次直接查库
+        try:
+            cal_df = df.copy()
+            if 'is_open' in cal_df.columns:
+                cal_df['is_open'] = cal_df['is_open'].astype(str).str.lower().isin(['true', '1'])
+            self._save_to_db(cal_df, 'dwd_trade_calendar')
+            logger.info(f"已将 {len(cal_df)} 条交易日历写入 dwd_trade_calendar")
+        except Exception as e:
+            logger.warning(f"写入 dwd_trade_calendar 失败（不影响本次更新）: {e}")
+
         trade_dates = df[df['is_open'] == 1]['trade_date'].tolist()
         return [d.replace('-', '') for d in trade_dates]
 
@@ -1191,6 +1242,23 @@ def run_cli():
     # ---- 全量/按类型更新 ----
     if args.data_type == 'daily':
         _sd = start_date or '20260101'
+
+        # 确保交易日历存在（日线更新依赖 dwd_trade_calendar）
+        db_check = duckdb.connect(args.db)
+        try:
+            cal_count = db_check.execute(
+                "SELECT COUNT(*) FROM dwd_trade_calendar WHERE is_open = TRUE"
+            ).fetchone()[0]
+        except Exception:
+            cal_count = 0
+        finally:
+            db_check.close()
+
+        if cal_count == 0:
+            print(f"[前置] dwd_trade_calendar 为空，自动更新交易日历 {_sd} ~ {end_date}...")
+            cal_result = fetcher.update_trade_calendar(_sd, end_date)
+            print(f"[前置] 交易日历: {cal_result['records']}条")
+
         if args.parallel:
             result = fetcher.update_daily_parallel(_sd, end_date, num_workers=args.workers)
         else:
