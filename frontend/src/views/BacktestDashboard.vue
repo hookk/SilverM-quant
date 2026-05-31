@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useBacktestStore } from '../stores/backtestStore'
@@ -32,13 +32,9 @@ ChartJS.register(
 const store = useBacktestStore()
 const router = useRouter()
 
-// Parameter sweep input
 const paramGridInput = ref('')
-
-// Tab switching: 'dashboard' or 'history'
 const currentView = ref<'dashboard' | 'history'>('dashboard')
 
-// 历史记录相关
 interface BacktestRun {
   run_id: string
   type?: 'single' | 'batch'
@@ -65,6 +61,50 @@ const historyPageSizeOptions = [10, 20, 50]
 const filterStrategyName = ref('')
 const filterStartDate = ref('')
 const filterEndDate = ref('')
+// 历史筛选策略下拉框相关
+const showHistoryStrategyDropdown = ref(false)
+const historyStrategySearch = ref('')
+const historyStrategyTriggerRef = ref<HTMLElement | null>(null)
+const historyDropdownStyle = ref<Record<string, string>>({})
+
+function updateHistoryDropdownPosition() {
+  if (!historyStrategyTriggerRef.value) return
+  const rect = historyStrategyTriggerRef.value.getBoundingClientRect()
+  historyDropdownStyle.value = {
+    top: `${rect.bottom + window.scrollY + 4}px`,
+    left: `${rect.left + window.scrollX}px`,
+    width: `${rect.width}px`,
+  }
+}
+
+function toggleHistoryStrategyDropdown() {
+  showHistoryStrategyDropdown.value = !showHistoryStrategyDropdown.value
+  if (showHistoryStrategyDropdown.value) {
+    // nextTick 确保 DOM 已更新后再计算位置
+    nextTick(() => updateHistoryDropdownPosition())
+  }
+}
+const filteredHistoryStrategies = computed(() => {
+  if (!historyStrategySearch.value) return store.strategies
+  const query = historyStrategySearch.value.toLowerCase()
+  return store.strategies.filter((s: any) => s.name.toLowerCase().includes(query))
+})
+function selectHistoryStrategy(name: string) {
+  filterStrategyName.value = name
+  showHistoryStrategyDropdown.value = false
+  historyStrategySearch.value = ''
+}
+function clearHistoryStrategy() {
+  filterStrategyName.value = ''
+  historyStrategySearch.value = ''
+  showHistoryStrategyDropdown.value = false
+}
+function closeHistoryDropdownOnOutsideClick(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  if (!target.closest('.history-strategy-dropdown-container')) {
+    showHistoryStrategyDropdown.value = false
+  }
+}
 const sortColumn = ref<string>('completed_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const isHistoryLoading = ref(false)
@@ -78,15 +118,9 @@ async function fetchHistory() {
       page: historyPage.value,
       limit: historyPageSize.value
     }
-    if (filterStrategyName.value) {
-      params.strategy_name = filterStrategyName.value
-    }
-    if (filterStartDate.value) {
-      params.start_date = filterStartDate.value
-    }
-    if (filterEndDate.value) {
-      params.end_date = filterEndDate.value
-    }
+    if (filterStrategyName.value) params.strategy_name = filterStrategyName.value
+    if (filterStartDate.value) params.start_date = filterStartDate.value
+    if (filterEndDate.value) params.end_date = filterEndDate.value
 
     const response = await axios.get('/api/backtest/history', { params })
     historyRuns.value = response.data.runs || []
@@ -100,37 +134,21 @@ async function fetchHistory() {
   }
 }
 
-// 切换到历史视图时自动加载数据
 watch(currentView, (newView) => {
-  if (newView === 'history' && historyRuns.value.length === 0) {
+  if (newView === 'history') {
+    // 每次切换到历史tab都重新加载，确保显示最新回测记录
     fetchHistory()
   }
 })
 
-function handleHistorySearch() {
-  historyPage.value = 1
-  fetchHistory()
-}
-
+function handleHistorySearch() { historyPage.value = 1; fetchHistory() }
 function handleHistoryReset() {
-  filterStrategyName.value = ''
-  filterStartDate.value = ''
-  filterEndDate.value = ''
-  historyPage.value = 1
-  fetchHistory()
+  filterStrategyName.value = ''; filterStartDate.value = ''; filterEndDate.value = ''
+  historyStrategySearch.value = ''; showHistoryStrategyDropdown.value = false
+  historyPage.value = 1; fetchHistory()
 }
-
-function handleHistoryPageSizeChange(size: number) {
-  historyPageSize.value = size
-  historyPage.value = 1
-  fetchHistory()
-}
-
-function handleHistoryPageChange(page: number) {
-  historyPage.value = page
-  fetchHistory()
-}
-
+function handleHistoryPageSizeChange(size: number) { historyPageSize.value = size; historyPage.value = 1; fetchHistory() }
+function handleHistoryPageChange(page: number) { historyPage.value = page; fetchHistory() }
 function handleHistorySort(column: string) {
   if (sortColumn.value === column) {
     sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
@@ -140,54 +158,46 @@ function handleHistorySort(column: string) {
   }
   fetchHistory()
 }
-
 function viewHistoryDetail(run: BacktestRun) {
   router.push({ name: 'backtest-detail', params: { runId: run.run_id } })
 }
-
-function formatHistoryDate(dateStr: string | undefined): string {
-  if (!dateStr) return '-'
-  return dateStr
-}
-
+function formatHistoryDate(dateStr: string | undefined): string { return dateStr || '-' }
 function formatHistoryNumber(num: number | undefined, decimals: number = 2): string {
   if (num === undefined || num === null) return '-'
   return num.toFixed(decimals)
 }
-
 function formatHistoryPercent(num: number | undefined): string {
   if (num === undefined || num === null) return '-'
   return (num * 100).toFixed(2) + '%'
 }
-
 function formatHistoryDateTime(dateStr: string | undefined): string {
   if (!dateStr) return '-'
-  try {
-    const d = new Date(dateStr)
-    return d.toLocaleString('zh-CN')
-  } catch {
-    return dateStr
-  }
+  try { return new Date(dateStr).toLocaleString('zh-CN') } catch { return dateStr }
 }
-
 function getHistorySortIcon(column: string): string {
   if (sortColumn.value !== column) return ''
   return sortOrder.value === 'asc' ? '↑' : '↓'
 }
 
-const stockInput = ref('')
+// ✅ 修复1：策略搜索框独立变量，不再与股票输入框共用
+const strategySearch = ref('')
 const showStrategyDropdown = ref(false)
+
+// ✅ 修复2：股票输入框独立变量
+const stockInput = ref('')
 
 onMounted(() => {
   store.fetchStrategies()
 })
 
+// ✅ 修复3：filteredStrategies 使用 strategySearch，不再使用 stockInput
 const filteredStrategies = computed(() => {
-  if (!stockInput.value) return store.strategies
-  const query = stockInput.value.toLowerCase()
+  if (!strategySearch.value) return store.strategies
+  const query = strategySearch.value.toLowerCase()
   return store.strategies.filter(s => s.name.toLowerCase().includes(query))
 })
 
+// ✅ 修复4：toggleStrategy 只修改 selectedStrategies，不触发 dropdown 开关
 function toggleStrategy(strategyName: string) {
   const idx = store.selectedStrategies.indexOf(strategyName)
   if (idx === -1) {
@@ -195,20 +205,37 @@ function toggleStrategy(strategyName: string) {
   } else {
     store.selectedStrategies.splice(idx, 1)
   }
+  // 不关闭 dropdown，允许多选
 }
 
 function removeStrategy(strategyName: string) {
   const idx = store.selectedStrategies.indexOf(strategyName)
-  if (idx !== -1) {
-    store.selectedStrategies.splice(idx, 1)
+  if (idx !== -1) store.selectedStrategies.splice(idx, 1)
+}
+
+// ✅ 修复5：点击外部关闭 dropdown
+function closeDropdownOnOutsideClick(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  if (!target.closest('.strategy-dropdown-container')) {
+    showStrategyDropdown.value = false
   }
 }
 
+onMounted(() => {
+  store.fetchStrategies()
+  document.addEventListener('click', closeDropdownOnOutsideClick)
+  document.addEventListener('click', closeHistoryDropdownOnOutsideClick)
+})
+
+import { onUnmounted } from 'vue'
+onUnmounted(() => {
+  document.removeEventListener('click', closeDropdownOnOutsideClick)
+  document.removeEventListener('click', closeHistoryDropdownOnOutsideClick)
+})
+
 function setStockMode(mode: 'all' | 'single' | 'multiple') {
   store.stockSelectionMode = mode
-  if (mode === 'all') {
-    store.selectedStocks = []
-  }
+  if (mode === 'all') store.selectedStocks = []
 }
 
 function addStock() {
@@ -220,18 +247,11 @@ function addStock() {
 
 function removeStock(stock: string) {
   const idx = store.selectedStocks.indexOf(stock)
-  if (idx !== -1) {
-    store.selectedStocks.splice(idx, 1)
-  }
+  if (idx !== -1) store.selectedStocks.splice(idx, 1)
 }
 
 const equityChartData = computed(() => {
-  if (!store.currentResult?.metrics) {
-    return {
-      labels: [],
-      datasets: []
-    }
-  }
+  if (!store.currentResult?.metrics) return { labels: [], datasets: [] }
   return {
     labels: ['收益曲线'],
     datasets: [{
@@ -248,44 +268,36 @@ const equityChartData = computed(() => {
 const equityChartOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  plugins: {
-    legend: {
-      display: true,
-      labels: {
-        color: '#94a3b8'
-      }
-    }
-  },
+  plugins: { legend: { display: true, labels: { color: '#94a3b8' } } },
   scales: {
-    x: {
-      grid: { color: 'rgba(51, 65, 85, 0.5)' },
-      ticks: { color: '#64748b' }
-    },
-    y: {
-      grid: { color: 'rgba(51, 65, 85, 0.5)' },
-      ticks: { color: '#64748b' }
-    }
+    x: { grid: { color: 'rgba(51, 65, 85, 0.5)' }, ticks: { color: '#64748b' } },
+    y: { grid: { color: 'rgba(51, 65, 85, 0.5)' }, ticks: { color: '#64748b' } }
   }
 }
 
 const metricsChartData = computed(() => {
-  if (!store.currentResult?.metrics) {
-    return {
-      labels: [],
-      datasets: []
+  // 优先单股结果，其次批量组合结果
+  let m: any = null
+  if (store.currentResult?.metrics) {
+    m = store.currentResult.metrics
+  } else if (batchPortfolioRow.value) {
+    const r = batchPortfolioRow.value
+    m = {
+      sharpe_ratio:  r.sharpe_ratio  ?? 0,
+      sortino_ratio: 0, // 批量结果无此字段
+      calmar_ratio:  r.calmar_ratio  ?? 0,
+      win_rate:      r.win_rate      ?? 0,
     }
   }
-  const m = store.currentResult.metrics
+  if (!m) return { labels: [], datasets: [] }
   return {
     labels: ['夏普比率', '索提诺比率', '卡尔马比率', '胜率'],
     datasets: [{
       label: '指标值',
       data: [m.sharpe_ratio, m.sortino_ratio, m.calmar_ratio, m.win_rate * 100],
       backgroundColor: [
-        'rgba(59, 130, 246, 0.7)',
-        'rgba(16, 185, 129, 0.7)',
-        'rgba(245, 158, 11, 0.7)',
-        'rgba(139, 92, 246, 0.7)'
+        'rgba(59, 130, 246, 0.7)', 'rgba(16, 185, 129, 0.7)',
+        'rgba(245, 158, 11, 0.7)', 'rgba(139, 92, 246, 0.7)'
       ],
       borderWidth: 0
     }]
@@ -295,48 +307,36 @@ const metricsChartData = computed(() => {
 const metricsChartOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  plugins: {
-    legend: {
-      display: false
-    }
-  },
+  plugins: { legend: { display: false } },
   scales: {
-    x: {
-      grid: { display: false },
-      ticks: { color: '#64748b' }
-    },
-    y: {
-      grid: { color: 'rgba(51, 65, 85, 0.5)' },
-      ticks: { color: '#64718b' }
-    }
+    x: { grid: { display: false }, ticks: { color: '#64748b' } },
+    y: { grid: { color: 'rgba(51, 65, 85, 0.5)' }, ticks: { color: '#64718b' } }
   }
 }
 
-// Per-Stock Breakdown
 const stockFilter = ref('')
 const stockSortKey = ref('total_return')
 const stockSortOrder = ref<'asc' | 'desc'>('desc')
 
+// 从批量回测结果中提取 PORTFOLIO 行（整体组合指标）
+const batchPortfolioRow = computed(() => {
+  if (!store.batchResult) return null
+  const stocks = store.batchResult.stocks ?? []
+  return stocks.find((s: any) => s.stock_code === 'PORTFOLIO' || s.code === 'PORTFOLIO') ?? null
+})
+
 const filteredStocks = computed(() => {
   if (!store.batchResult?.stocks) return []
-  let stocks = [...store.batchResult.stocks]
-
-  if (stockFilter.value) {
-    stocks = stocks.filter(s => s.status === stockFilter.value)
-  }
-
-  stocks.sort((a, b) => {
+  // 排除 PORTFOLIO 汇总行，只显示真实个股
+  let stocks = store.batchResult.stocks.filter((s: any) => s.stock_code !== 'PORTFOLIO')
+  if (stockFilter.value) stocks = stocks.filter((s: any) => s.status === stockFilter.value)
+  stocks.sort((a: any, b: any) => {
     const aVal = a[stockSortKey.value as keyof typeof a]
     const bVal = b[stockSortKey.value as keyof typeof b]
     if (aVal == null) return 1
     if (bVal == null) return -1
-    if (stockSortOrder.value === 'asc') {
-      return aVal > bVal ? 1 : -1
-    } else {
-      return aVal < bVal ? 1 : -1
-    }
+    return stockSortOrder.value === 'asc' ? (aVal > bVal ? 1 : -1) : (aVal < bVal ? 1 : -1)
   })
-
   return stocks
 })
 
@@ -351,13 +351,9 @@ function sortStocks(key: string) {
 
 const bestParamIndex = computed(() => {
   if (!store.batchResult?.param_results?.length) return -1
-  let best = 0
-  let bestReturn = -Infinity
+  let best = 0; let bestReturn = -Infinity
   store.batchResult.param_results.forEach((pr: any, idx: number) => {
-    if ((pr.results?.avg_return || 0) > bestReturn) {
-      bestReturn = pr.results.avg_return
-      best = idx
-    }
+    if ((pr.results?.avg_return || 0) > bestReturn) { bestReturn = pr.results.avg_return; best = idx }
   })
   return best
 })
@@ -394,39 +390,23 @@ async function rescanStrategies() {
           <div class="flex gap-2">
             <button
               @click="currentView = 'dashboard'"
-              :class="[
-                'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-                currentView === 'dashboard'
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-              ]"
-            >
-              回测配置
-            </button>
+              :class="['px-4 py-2 rounded-lg text-sm font-medium transition-colors', currentView === 'dashboard' ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600']"
+            >回测配置</button>
             <button
               @click="currentView = 'history'"
-              :class="[
-                'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-                currentView === 'history'
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-              ]"
-            >
-              回测历史
-            </button>
+              :class="['px-4 py-2 rounded-lg text-sm font-medium transition-colors', currentView === 'history' ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600']"
+            >回测历史</button>
             <button
               @click="goToStrategyManagement"
               class="px-4 py-2 rounded-lg text-sm font-medium transition-colors bg-slate-700 text-slate-300 hover:bg-slate-600"
-            >
-              策略管理
-            </button>
+            >策略管理</button>
           </div>
         </div>
       </header>
 
       <div v-if="currentView === 'dashboard'" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 space-y-6">
-          <!-- Batch Progress Card -->
+          <!-- Batch Progress Card: 运行中 -->
           <div v-if="store.isBatchRunning" class="bg-slate-800/50 backdrop-blur border border-blue-500/50 rounded-xl p-6 mb-6">
             <div class="flex items-center justify-between mb-4">
               <h3 class="text-lg font-semibold">批量回测进行中</h3>
@@ -438,9 +418,18 @@ async function rescanStrategies() {
             <p class="text-slate-400 text-sm">{{ store.batchMessage }}</p>
           </div>
 
+          <!-- Batch Error Card: 失败时显示，不再消失 -->
+          <div v-if="store.batchStatus === 'failed' && store.batchMessage" class="bg-slate-800/50 backdrop-blur border border-red-500/50 rounded-xl p-6 mb-6">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-lg font-semibold text-red-400">批量回测失败</h3>
+              <button @click="store.resetBatchResult()" class="text-xs text-slate-400 hover:text-white px-2 py-1 bg-slate-700 rounded">关闭</button>
+            </div>
+            <pre class="text-sm text-red-300 whitespace-pre-wrap break-all bg-slate-900/50 rounded p-3 max-h-48 overflow-y-auto">{{ store.batchMessage }}</pre>
+            <p class="text-xs text-slate-500 mt-2">请查看服务端日志获取完整错误信息</p>
+          </div>
+
           <!-- Batch Results Card -->
           <div v-if="store.hasBatchResult && store.batchResult" class="space-y-6">
-            <!-- Stats Grid -->
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div class="bg-slate-800/50 rounded-lg p-4">
                 <p class="text-slate-400 text-xs mb-1">成功</p>
@@ -462,7 +451,6 @@ async function rescanStrategies() {
               </div>
             </div>
 
-            <!-- Top5/Bottom5 -->
             <div class="grid grid-cols-2 gap-6">
               <div class="bg-slate-800/50 rounded-lg p-4">
                 <h4 class="text-green-400 font-semibold mb-3">收益Top5</h4>
@@ -484,7 +472,6 @@ async function rescanStrategies() {
               </div>
             </div>
 
-            <!-- Param Sweep Comparison -->
             <div v-if="store.batchResult?.param_results && store.batchResult.param_results.length > 0" class="mt-6">
               <h4 class="text-lg font-semibold mb-3">参数扫描对比</h4>
               <div class="overflow-x-auto">
@@ -522,17 +509,17 @@ async function rescanStrategies() {
           <!-- Per-Stock Breakdown -->
           <div v-if="store.batchResult?.stocks && store.batchResult.stocks.length > 0" class="mt-6">
             <div class="flex items-center justify-between mb-4">
-              <h4 class="text-lg font-semibold">全部股票 ({{ store.batchResult?.stocks?.length }})</h4>
-              <div class="flex gap-2">
-                <select v-model="stockFilter" class="px-3 py-1 bg-slate-700 border border-slate-600 rounded text-sm">
-                  <option value="">全部</option>
-                  <option value="success">成功</option>
-                  <option value="error">失败</option>
-                  <option value="no_data">无数据</option>
-                </select>
-              </div>
+              <h4 class="text-lg font-semibold">
+                全部股票 ({{ store.batchResult?.stocks?.filter((s: any) => s.stock_code !== 'PORTFOLIO').length }} 只
+                <span v-if="batchPortfolioRow" class="text-sm text-slate-400 font-normal ml-1">，以组合方式运行</span>)
+              </h4>
+              <select v-model="stockFilter" class="px-3 py-1 bg-slate-700 border border-slate-600 rounded text-sm">
+                <option value="">全部</option>
+                <option value="success">成功</option>
+                <option value="error">失败</option>
+                <option value="no_data">无数据</option>
+              </select>
             </div>
-
             <div class="overflow-x-auto max-h-96 overflow-y-auto">
               <table class="w-full text-sm">
                 <thead class="sticky top-0 bg-slate-800">
@@ -547,8 +534,7 @@ async function rescanStrategies() {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="stock in filteredStocks" :key="stock.stock_code"
-                      class="border-b border-slate-800 hover:bg-slate-700/30">
+                  <tr v-for="stock in filteredStocks" :key="stock.stock_code" class="border-b border-slate-800 hover:bg-slate-700/30">
                     <td class="py-2 px-3 font-mono text-blue-400">{{ stock.stock_code }}</td>
                     <td class="py-2 px-3">{{ stock.stock_name || '-' }}</td>
                     <td class="py-2 px-3">
@@ -559,12 +545,8 @@ async function rescanStrategies() {
                     <td class="py-2 px-3 text-right" :class="stock.total_return >= 0 ? 'text-red-400' : 'text-green-400'">
                       {{ stock.total_return != null ? (stock.total_return * 100).toFixed(2) + '%' : '-' }}
                     </td>
-                    <td class="py-2 px-3 text-right text-blue-400">
-                      {{ stock.sharpe_ratio != null ? stock.sharpe_ratio.toFixed(2) : '-' }}
-                    </td>
-                    <td class="py-2 px-3 text-right text-purple-400">
-                      {{ stock.win_rate != null ? (stock.win_rate * 100).toFixed(1) + '%' : '-' }}
-                    </td>
+                    <td class="py-2 px-3 text-right text-blue-400">{{ stock.sharpe_ratio != null ? stock.sharpe_ratio.toFixed(2) : '-' }}</td>
+                    <td class="py-2 px-3 text-right text-purple-400">{{ stock.win_rate != null ? (stock.win_rate * 100).toFixed(1) + '%' : '-' }}</td>
                     <td class="py-2 px-3 text-right">{{ stock.total_trades ?? '-' }}</td>
                   </tr>
                 </tbody>
@@ -572,6 +554,7 @@ async function rescanStrategies() {
             </div>
           </div>
 
+          <!-- 回测配置卡片 -->
           <div class="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6">
             <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
               <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -581,23 +564,24 @@ async function rescanStrategies() {
             </h2>
 
             <div class="space-y-5">
+              <!-- ✅ 修复：策略下拉容器加 strategy-dropdown-container class，用于点击外部关闭 -->
               <div>
                 <label class="block text-sm font-medium text-slate-300 mb-2 flex items-center justify-between">
                   <span>选择策略</span>
-                  <button
-                    @click="rescanStrategies"
-                    class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                  >
+                  <button @click="rescanStrategies" class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                     </svg>
                     重新扫描
                   </button>
                 </label>
-                <div class="relative">
+
+                <!-- ✅ 修复：外层容器加 strategy-dropdown-container，阻止事件传播到 document -->
+                <div class="relative strategy-dropdown-container">
+                  <!-- 已选策略展示区，点击展开/收起 dropdown -->
                   <div
                     class="min-h-[42px] bg-slate-700/50 border border-slate-600 rounded-lg p-2 cursor-pointer flex flex-wrap gap-2"
-                    @click="showStrategyDropdown = !showStrategyDropdown"
+                    @click.stop="showStrategyDropdown = !showStrategyDropdown"
                   >
                     <span v-if="store.selectedStrategies.length === 0" class="text-slate-400 py-1">点击选择策略...</span>
                     <span
@@ -606,32 +590,49 @@ async function rescanStrategies() {
                       class="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-sm"
                     >
                       {{ s }}
+                      <!-- ✅ 修复：removeStrategy 的 @click.stop 阻止冒泡到父 div，避免触发 dropdown 切换 -->
                       <button @click.stop="removeStrategy(s)" class="hover:text-blue-200">×</button>
                     </span>
                   </div>
+
+                  <!-- dropdown 列表 -->
                   <div
                     v-if="showStrategyDropdown"
                     class="absolute z-10 w-full mt-1 bg-slate-700 border border-slate-600 rounded-lg shadow-xl max-h-60 overflow-y-auto"
+                    @click.stop
                   >
                     <div class="p-2">
+                      <!-- ✅ 修复：使用独立的 strategySearch 变量，不再污染 stockInput -->
                       <input
-                        v-model="stockInput"
+                        v-model="strategySearch"
                         type="text"
                         placeholder="搜索策略..."
                         class="w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded text-sm mb-2"
+                        @click.stop
                       />
+                      <!-- 空状态提示 -->
+                      <div v-if="filteredStrategies.length === 0" class="px-3 py-4 text-center text-slate-400 text-sm">
+                        暂无策略，请先点击"重新扫描"注册策略
+                      </div>
+                      <!-- ✅ 修复：每一行的 @click 直接调用 toggleStrategy，checkbox 只做展示用（readonly） -->
                       <div
                         v-for="strategy in filteredStrategies"
                         :key="strategy.name"
                         class="px-3 py-2 hover:bg-slate-600 rounded cursor-pointer flex items-center gap-2"
-                        @click="toggleStrategy(strategy.name)"
+                        @click.stop="toggleStrategy(strategy.name)"
                       >
+                        <!-- ✅ 修复：checkbox 不再绑定 @click，改为 pointer-events-none 纯展示，
+                             由父 div 的 @click.stop 统一处理选中逻辑，彻底消除双重触发 -->
                         <input
                           type="checkbox"
                           :checked="store.selectedStrategies.includes(strategy.name)"
-                          class="accent-blue-500"
+                          class="accent-blue-500 pointer-events-none"
+                          readonly
                         />
                         <span class="text-sm">{{ strategy.name }}</span>
+                        <span v-if="strategy.description" class="text-xs text-slate-400 truncate ml-auto max-w-[120px]" :title="strategy.description">
+                          {{ strategy.description }}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -641,60 +642,23 @@ async function rescanStrategies() {
               <div class="grid grid-cols-2 gap-4">
                 <div>
                   <label class="block text-sm font-medium text-slate-300 mb-2">开始日期</label>
-                  <input
-                    v-model="store.startDate"
-                    type="date"
-                    class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                  />
+                  <input v-model="store.startDate" type="date" class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-slate-300 mb-2">结束日期</label>
-                  <input
-                    v-model="store.endDate"
-                    type="date"
-                    class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                  />
+                  <input v-model="store.endDate" type="date" class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
                 </div>
               </div>
 
               <div>
                 <label class="block text-sm font-medium text-slate-300 mb-2">股票选择</label>
                 <div class="flex gap-2 mb-3">
-                  <button
-                    @click="setStockMode('all')"
-                    :class="[
-                      'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-                      store.stockSelectionMode === 'all'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                    ]"
-                  >
-                    全部
-                  </button>
-                  <button
-                    @click="setStockMode('single')"
-                    :class="[
-                      'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-                      store.stockSelectionMode === 'single'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                    ]"
-                  >
-                    单只
-                  </button>
-                  <button
-                    @click="setStockMode('multiple')"
-                    :class="[
-                      'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-                      store.stockSelectionMode === 'multiple'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                    ]"
-                  >
-                    多只
-                  </button>
+                  <button @click="setStockMode('all')" :class="['px-4 py-2 rounded-lg text-sm font-medium transition-colors', store.stockSelectionMode === 'all' ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600']">全部</button>
+                  <button @click="setStockMode('single')" :class="['px-4 py-2 rounded-lg text-sm font-medium transition-colors', store.stockSelectionMode === 'single' ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600']">单只</button>
+                  <button @click="setStockMode('multiple')" :class="['px-4 py-2 rounded-lg text-sm font-medium transition-colors', store.stockSelectionMode === 'multiple' ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600']">多只</button>
                 </div>
 
+                <!-- ✅ 修复：股票输入框使用独立的 stockInput 变量 -->
                 <div v-if="store.stockSelectionMode !== 'all'" class="flex gap-2 mb-2">
                   <input
                     v-model="stockInput"
@@ -703,20 +667,11 @@ async function rescanStrategies() {
                     class="flex-1 px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
                     @keyup.enter="addStock"
                   />
-                  <button
-                    @click="addStock"
-                    class="px-4 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm transition-colors"
-                  >
-                    添加
-                  </button>
+                  <button @click="addStock" class="px-4 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm transition-colors">添加</button>
                 </div>
 
                 <div v-if="store.selectedStocks.length > 0" class="flex flex-wrap gap-2">
-                  <span
-                    v-for="stock in store.selectedStocks"
-                    :key="stock"
-                    class="inline-flex items-center gap-1 px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-sm"
-                  >
+                  <span v-for="stock in store.selectedStocks" :key="stock" class="inline-flex items-center gap-1 px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-sm">
                     {{ stock }}
                     <button @click="removeStock(stock)" class="hover:text-purple-200">×</button>
                   </span>
@@ -725,22 +680,12 @@ async function rescanStrategies() {
 
               <div>
                 <label class="block text-sm font-medium text-slate-300 mb-2">初始资金</label>
-                <input
-                  v-model.number="store.initialCapital"
-                  type="number"
-                  class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                />
+                <input v-model.number="store.initialCapital" type="number" class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
               </div>
 
-              <!-- Parameter Sweep Input -->
               <div v-if="store.stockSelectionMode === 'all'">
                 <label class="block text-sm font-medium text-slate-300 mb-2">参数扫描 (可选)</label>
-                <input
-                  v-model="paramGridInput"
-                  type="text"
-                  placeholder="如: threshold:6,8,10"
-                  class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                />
+                <input v-model="paramGridInput" type="text" placeholder="如: threshold:6,8,10" class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
                 <p class="text-xs text-slate-500 mt-1">格式: threshold:6,8,10 (逗号分隔)</p>
               </div>
 
@@ -779,23 +724,18 @@ async function rescanStrategies() {
               关键指标
             </h2>
 
+            <!-- 单股回测结果 -->
             <div v-if="store.hasResult && store.currentResult?.metrics" class="space-y-4">
               <div class="grid grid-cols-2 gap-3">
                 <div class="bg-slate-700/50 rounded-lg p-3">
                   <p class="text-slate-400 text-xs mb-1">总收益率</p>
-                  <p :class="[
-                    'text-xl font-bold',
-                    store.currentResult.metrics.total_return >= 0 ? 'text-red-400' : 'text-green-400'
-                  ]">
+                  <p :class="['text-xl font-bold', store.currentResult.metrics.total_return >= 0 ? 'text-red-400' : 'text-green-400']">
                     {{ (store.currentResult.metrics.total_return * 100).toFixed(2) }}%
                   </p>
                 </div>
                 <div class="bg-slate-700/50 rounded-lg p-3">
                   <p class="text-slate-400 text-xs mb-1">年化收益率</p>
-                  <p :class="[
-                    'text-xl font-bold',
-                    store.currentResult.metrics.annual_return >= 0 ? 'text-red-400' : 'text-green-400'
-                  ]">
+                  <p :class="['text-xl font-bold', store.currentResult.metrics.annual_return >= 0 ? 'text-red-400' : 'text-green-400']">
                     {{ (store.currentResult.metrics.annual_return * 100).toFixed(2) }}%
                   </p>
                 </div>
@@ -813,15 +753,11 @@ async function rescanStrategies() {
                 </div>
                 <div class="bg-slate-700/50 rounded-lg p-3">
                   <p class="text-slate-400 text-xs mb-1">最大回撤</p>
-                  <p class="text-xl font-bold text-red-400">
-                    {{ (store.currentResult.metrics.max_drawdown * 100).toFixed(2) }}%
-                  </p>
+                  <p class="text-xl font-bold text-red-400">{{ (store.currentResult.metrics.max_drawdown * 100).toFixed(2) }}%</p>
                 </div>
                 <div class="bg-slate-700/50 rounded-lg p-3">
                   <p class="text-slate-400 text-xs mb-1">胜率</p>
-                  <p class="text-xl font-bold text-purple-400">
-                    {{ (store.currentResult.metrics.win_rate * 100).toFixed(2) }}%
-                  </p>
+                  <p class="text-xl font-bold text-purple-400">{{ (store.currentResult.metrics.win_rate * 100).toFixed(2) }}%</p>
                 </div>
                 <div class="bg-slate-700/50 rounded-lg p-3">
                   <p class="text-slate-400 text-xs mb-1">交易次数</p>
@@ -830,7 +766,53 @@ async function rescanStrategies() {
               </div>
             </div>
 
-            <div v-else-if="store.isLoading" class="flex items-center justify-center py-8">
+            <!-- 批量回测（组合）结果 -->
+            <div v-else-if="store.hasBatchResult" class="space-y-4">
+              <p class="text-xs text-slate-400 mb-2">
+                {{ batchPortfolioRow ? '组合回测结果' : '批量回测汇总' }}（策略: {{ store.selectedStrategies[0] }}）
+              </p>
+              <!-- 优先显示 PORTFOLIO 组合行，无则显示批量统计汇总 -->
+              <div class="grid grid-cols-2 gap-3">
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">{{ batchPortfolioRow ? '总收益率' : '平均收益率' }}</p>
+                  <p :class="['text-xl font-bold', (batchPortfolioRow ? batchPortfolioRow.total_return : store.batchResult!.avg_return) >= 0 ? 'text-red-400' : 'text-green-400']">
+                    {{ ((batchPortfolioRow ? batchPortfolioRow.total_return : store.batchResult!.avg_return) * 100).toFixed(2) }}%
+                  </p>
+                </div>
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">{{ batchPortfolioRow ? '年化收益率' : '平均年化收益率' }}</p>
+                  <p :class="['text-xl font-bold', (batchPortfolioRow ? (batchPortfolioRow.annualized_return ?? 0) : (store.batchResult!.avg_annual_return ?? 0)) >= 0 ? 'text-red-400' : 'text-green-400']">
+                    {{ ((batchPortfolioRow ? (batchPortfolioRow.annualized_return ?? 0) : (store.batchResult!.avg_annual_return ?? 0)) * 100).toFixed(2) }}%
+                  </p>
+                </div>
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">{{ batchPortfolioRow ? '夏普比率' : '平均夏普比率' }}</p>
+                  <p class="text-xl font-bold text-blue-400">{{ (batchPortfolioRow ? (batchPortfolioRow.sharpe_ratio ?? 0) : store.batchResult!.avg_sharpe).toFixed(2) }}</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">{{ batchPortfolioRow ? '最大回撤' : '平均最大回撤' }}</p>
+                  <p class="text-xl font-bold text-red-400">{{ ((batchPortfolioRow ? (batchPortfolioRow.max_drawdown ?? 0) : (store.batchResult!.avg_max_drawdown ?? 0)) * 100).toFixed(2) }}%</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">{{ batchPortfolioRow ? '胜率' : '平均胜率' }}</p>
+                  <p class="text-xl font-bold text-purple-400">{{ ((batchPortfolioRow ? (batchPortfolioRow.win_rate ?? 0) : store.batchResult!.avg_win_rate) * 100).toFixed(2) }}%</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">总交易次数</p>
+                  <p class="text-xl font-bold text-slate-300">{{ batchPortfolioRow ? (batchPortfolioRow.total_trades ?? 0) : (store.batchResult!.total_trades ?? 0) }}</p>
+                </div>
+                <div v-if="batchPortfolioRow" class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">最终资产</p>
+                  <p class="text-xl font-bold text-slate-200">{{ ((batchPortfolioRow.final_value ?? 0) / 10000).toFixed(1) }}万</p>
+                </div>
+                <div class="bg-slate-700/50 rounded-lg p-3">
+                  <p class="text-slate-400 text-xs mb-1">有效股票数</p>
+                  <p class="text-xl font-bold text-slate-300">{{ store.batchResult?.success_count ?? 0 }} / {{ store.batchResult?.total_stocks ?? 0 }}</p>
+                </div>
+              </div>
+            </div>
+
+            <div v-else-if="store.isLoading || store.isBatchRunning" class="flex items-center justify-center py-8">
               <svg class="w-8 h-8 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -846,7 +828,7 @@ async function rescanStrategies() {
             </div>
           </div>
 
-          <div v-if="store.hasResult && store.currentResult?.metrics" class="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6">
+          <div v-if="(store.hasResult && store.currentResult?.metrics) || (store.hasBatchResult && batchPortfolioRow)" class="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6">
             <h2 class="text-lg font-semibold mb-4">指标对比</h2>
             <div class="h-48">
               <Bar :data="metricsChartData" :options="metricsChartOptions" />
@@ -858,68 +840,92 @@ async function rescanStrategies() {
 
     <!-- 回测历史视图 -->
     <div v-if="currentView === 'history'" class="space-y-6">
-      <!-- 筛选 -->
-      <div class="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6">
+      <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
         <div class="flex flex-wrap gap-4 items-end">
-          <div class="flex-1 min-w-[200px]">
+          <div class="flex-1 min-w-[200px] history-strategy-dropdown-container relative">
             <label class="block text-sm text-slate-400 mb-1">策略名称</label>
-            <input
-              v-model="filterStrategyName"
-              type="text"
-              placeholder="输入策略名称"
-              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-              @keyup.enter="handleHistorySearch"
-            />
+            <!-- 策略名称下拉选择框触发器 -->
+            <div
+              ref="historyStrategyTriggerRef"
+              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm cursor-pointer flex items-center justify-between min-h-[38px]"
+              @click.stop="toggleHistoryStrategyDropdown"
+            >
+              <span v-if="filterStrategyName" class="text-white flex items-center gap-2">
+                {{ filterStrategyName }}
+                <button @click.stop="clearHistoryStrategy" class="text-slate-400 hover:text-white ml-1">×</button>
+              </span>
+              <span v-else class="text-slate-400">全部策略（点击筛选）</span>
+              <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+              </svg>
+            </div>
+            <!-- 用 Teleport 挂载到 body，彻底脱离所有 backdrop-blur 层叠上下文 -->
+            <Teleport to="body">
+              <div
+                v-if="showHistoryStrategyDropdown"
+                :style="historyDropdownStyle"
+                class="fixed z-[9999] bg-slate-700 border border-slate-600 rounded-lg shadow-2xl max-h-60 overflow-y-auto"
+                @click.stop
+              >
+                <div class="p-2">
+                  <input
+                    v-model="historyStrategySearch"
+                    type="text"
+                    placeholder="搜索策略..."
+                    class="w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded text-sm mb-2 text-white"
+                    @click.stop
+                  />
+                  <!-- 全部选项 -->
+                  <div
+                    class="px-3 py-2 hover:bg-slate-600 rounded cursor-pointer flex items-center gap-2 text-slate-300"
+                    @click.stop="clearHistoryStrategy(); handleHistorySearch()"
+                  >
+                    <span class="text-sm">全部策略</span>
+                  </div>
+                  <div v-if="filteredHistoryStrategies.length === 0" class="px-3 py-4 text-center text-slate-400 text-sm">
+                    暂无策略，请先运行回测或重新扫描
+                  </div>
+                  <div
+                    v-for="strategy in filteredHistoryStrategies"
+                    :key="strategy.name"
+                    class="px-3 py-2 hover:bg-slate-600 rounded cursor-pointer flex items-center gap-2"
+                    :class="filterStrategyName === strategy.name ? 'bg-blue-500/20 text-blue-400' : 'text-white'"
+                    @click.stop="selectHistoryStrategy(strategy.name); handleHistorySearch()"
+                  >
+                    <span class="text-sm">{{ strategy.name }}</span>
+                  </div>
+                </div>
+              </div>
+            </Teleport>
           </div>
           <div class="flex-1 min-w-[150px]">
             <label class="block text-sm text-slate-400 mb-1">开始日期</label>
-            <input
-              v-model="filterStartDate"
-              type="date"
-              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-            />
+            <input v-model="filterStartDate" type="date" class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
           </div>
           <div class="flex-1 min-w-[150px]">
             <label class="block text-sm text-slate-400 mb-1">结束日期</label>
-            <input
-              v-model="filterEndDate"
-              type="date"
-              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-            />
+            <input v-model="filterEndDate" type="date" class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
           </div>
           <div class="flex gap-2">
-            <button
-              @click="handleHistorySearch"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm transition-colors"
-            >
-              搜索
-            </button>
-            <button
-              @click="handleHistoryReset"
-              class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm transition-colors"
-            >
-              重置
-            </button>
+            <button @click="handleHistorySearch" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm transition-colors">搜索</button>
+            <button @click="handleHistoryReset" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm transition-colors">重置</button>
           </div>
         </div>
       </div>
 
-      <!-- 表格 -->
       <div class="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6">
         <div class="flex justify-between items-center mb-4">
           <h2 class="text-lg font-semibold">回测记录</h2>
           <span class="text-sm text-slate-400">共 {{ historyTotal }} 条</span>
         </div>
 
-        <!-- Loading -->
         <div v-if="isHistoryLoading" class="flex items-center justify-center py-12">
           <svg class="w-8 h-8 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 0114 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
         </div>
 
-        <!-- Empty -->
         <div v-else-if="historyRuns.length === 0" class="text-center py-12 text-slate-400">
           <svg class="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
@@ -927,55 +933,26 @@ async function rescanStrategies() {
           <p class="text-sm">暂无回测记录</p>
         </div>
 
-        <!-- Table -->
         <div v-else class="overflow-x-auto">
           <table class="w-full">
             <thead>
               <tr class="text-left text-slate-400 border-b border-slate-700">
-                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('run_id')">
-                  回测ID {{ getHistorySortIcon('run_id') }}
-                </th>
-                <th class="pb-3 pr-4">
-                  类型
-                </th>
-                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('strategy_name')">
-                  策略名称 {{ getHistorySortIcon('strategy_name') }}
-                </th>
-                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('start_date')">
-                  开始日期 {{ getHistorySortIcon('start_date') }}
-                </th>
-                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('end_date')">
-                  结束日期 {{ getHistorySortIcon('end_date') }}
-                </th>
-                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('total_return')">
-                  总股票数 {{ getHistorySortIcon('total_return') }}
-                </th>
-                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('sharpe_ratio')">
-                  成功数 {{ getHistorySortIcon('sharpe_ratio') }}
-                </th>
-                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('max_drawdown')">
-                  成功率 {{ getHistorySortIcon('max_drawdown') }}
-                </th>
-                <th class="pb-3 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('completed_at')">
-                  运行时间 {{ getHistorySortIcon('completed_at') }}
-                </th>
+                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('run_id')">回测ID {{ getHistorySortIcon('run_id') }}</th>
+                <th class="pb-3 pr-4">类型</th>
+                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('strategy_name')">策略名称 {{ getHistorySortIcon('strategy_name') }}</th>
+                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('start_date')">开始日期 {{ getHistorySortIcon('start_date') }}</th>
+                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('end_date')">结束日期 {{ getHistorySortIcon('end_date') }}</th>
+                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('total_return')">总股票数 {{ getHistorySortIcon('total_return') }}</th>
+                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('sharpe_ratio')">成功数 {{ getHistorySortIcon('sharpe_ratio') }}</th>
+                <th class="pb-3 pr-4 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('max_drawdown')">成功率 {{ getHistorySortIcon('max_drawdown') }}</th>
+                <th class="pb-3 cursor-pointer hover:text-white transition-colors" @click="handleHistorySort('completed_at')">运行时间 {{ getHistorySortIcon('completed_at') }}</th>
               </tr>
             </thead>
             <tbody>
-              <tr
-                v-for="run in historyRuns"
-                :key="run.run_id"
-                class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer transition-colors"
-                @click="viewHistoryDetail(run)"
-              >
+              <tr v-for="run in historyRuns" :key="run.run_id" class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer transition-colors" @click="viewHistoryDetail(run)">
                 <td class="py-3 pr-4 font-mono text-blue-400 text-sm">{{ run.run_id }}</td>
                 <td class="py-3 pr-4">
-                  <span
-                    :class="[
-                      'px-2 py-0.5 rounded text-xs font-medium',
-                      run.type === 'batch' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'
-                    ]"
-                  >
+                  <span :class="['px-2 py-0.5 rounded text-xs font-medium', run.type === 'batch' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400']">
                     {{ run.type === 'batch' ? '批量' : '单次' }}
                   </span>
                 </td>
@@ -983,42 +960,20 @@ async function rescanStrategies() {
                 <td class="py-3 pr-4 text-slate-300">{{ formatHistoryDate(run.start_date) }}</td>
                 <td class="py-3 pr-4 text-slate-300">{{ formatHistoryDate(run.end_date) }}</td>
                 <td class="py-3 pr-4">
-                  <template v-if="run.type === 'batch'">
-                    <span class="text-slate-200">{{ run.total_stocks ?? '-' }}</span>
-                  </template>
-                  <template v-else>
-                    <span
-                      :class="[
-                        'font-medium',
-                        (run.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'
-                      ]"
-                    >
-                      {{ formatHistoryPercent(run.total_return) }}
-                    </span>
-                  </template>
+                  <template v-if="run.type === 'batch'"><span class="text-slate-200">{{ run.total_stocks ?? '-' }}</span></template>
+                  <template v-else><span :class="['font-medium', (run.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400']">{{ formatHistoryPercent(run.total_return) }}</span></template>
+                </td>
+                <td class="py-3 pr-4">
+                  <template v-if="run.type === 'batch'"><span class="text-green-400">{{ run.success_count ?? '-' }}</span></template>
+                  <template v-else><span class="text-blue-400">{{ formatHistoryNumber(run.sharpe_ratio) }}</span></template>
                 </td>
                 <td class="py-3 pr-4">
                   <template v-if="run.type === 'batch'">
-                    <span class="text-green-400">{{ run.success_count ?? '-' }}</span>
-                  </template>
-                  <template v-else>
-                    <span class="text-blue-400">{{ formatHistoryNumber(run.sharpe_ratio) }}</span>
-                  </template>
-                </td>
-                <td class="py-3 pr-4">
-                  <template v-if="run.type === 'batch'">
-                    <span
-                      :class="[
-                        'font-medium',
-                        (run.success_rate ?? 0) >= 0.8 ? 'text-green-400' : (run.success_rate ?? 0) >= 0.5 ? 'text-yellow-400' : 'text-red-400'
-                      ]"
-                    >
+                    <span :class="['font-medium', (run.success_rate ?? 0) >= 0.8 ? 'text-green-400' : (run.success_rate ?? 0) >= 0.5 ? 'text-yellow-400' : 'text-red-400']">
                       {{ ((run.success_rate ?? 0) * 100).toFixed(1) }}%
                     </span>
                   </template>
-                  <template v-else>
-                    <span class="text-red-400">{{ formatHistoryPercent(run.max_drawdown) }}</span>
-                  </template>
+                  <template v-else><span class="text-red-400">{{ formatHistoryPercent(run.max_drawdown) }}</span></template>
                 </td>
                 <td class="py-3 text-slate-400 text-sm">{{ formatHistoryDateTime(run.completed_at) }}</td>
               </tr>
@@ -1026,35 +981,18 @@ async function rescanStrategies() {
           </table>
         </div>
 
-        <!-- Pagination -->
         <div v-if="historyRuns.length > 0" class="flex justify-between items-center mt-4 pt-4 border-t border-slate-700">
           <div class="flex items-center gap-2">
             <span class="text-sm text-slate-400">每页</span>
-            <select
-              v-model="historyPageSize"
-              class="px-2 py-1 bg-slate-700 border border-slate-600 rounded text-sm focus:outline-none focus:border-blue-500"
-              @change="handleHistoryPageSizeChange(historyPageSize)"
-            >
+            <select v-model="historyPageSize" class="px-2 py-1 bg-slate-700 border border-slate-600 rounded text-sm focus:outline-none focus:border-blue-500" @change="handleHistoryPageSizeChange(historyPageSize)">
               <option v-for="size in historyPageSizeOptions" :key="size" :value="size">{{ size }}</option>
             </select>
             <span class="text-sm text-slate-400">条</span>
           </div>
           <div class="flex items-center gap-4">
-            <button
-              @click="handleHistoryPageChange(historyPage - 1)"
-              :disabled="historyPage === 1"
-              class="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-colors"
-            >
-              上一页
-            </button>
+            <button @click="handleHistoryPageChange(historyPage - 1)" :disabled="historyPage === 1" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-colors">上一页</button>
             <span class="text-slate-400 text-sm">第 {{ historyPage }} / {{ historyTotalPages }} 页</span>
-            <button
-              @click="handleHistoryPageChange(historyPage + 1)"
-              :disabled="historyPage >= historyTotalPages"
-              class="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-colors"
-            >
-              下一页
-            </button>
+            <button @click="handleHistoryPageChange(historyPage + 1)" :disabled="historyPage >= historyTotalPages" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-colors">下一页</button>
           </div>
         </div>
       </div>

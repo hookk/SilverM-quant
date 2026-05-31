@@ -1,0 +1,151 @@
+# evolution/data_registry.yaml
+# ============================================================
+# Declarative registry of all data sources available to signals.
+#
+# DataPreparer reads this file to know:
+#   - which DuckDB tables to query
+#   - which columns to load and how to rename them
+#   - how to join multi-frequency data
+#   - which datasets are active (enabled: true)
+#
+# Column names exposed to signals use snake_case lowercase.
+#
+# ── Schema reference (Astock3.duckdb) ────────────────────────
+#   dwd_daily_price      (trade_date, ts_code, open/high/low/close, vol, amount, pct_chg)
+#   dwd_daily_price_qfq  same schema, forward-adjusted prices
+#   dwd_index_daily      (index_code, trade_date, open/high/low/close, vol, amount)
+#   dwd_daily_basic      (trade_date, ts_code, pe_ttm, pb, total_mv, circ_mv, turn_rate, ...)
+# ============================================================
+
+# ── 3-Segment Data Split ─────────────────────────────────────────────────────
+splits:
+  train:
+    start: "2018-01-01"
+    end:   "2023-12-31"
+    description: "Agent exploration — full access"
+
+  valid:
+    start: "2024-01-01"
+    end:   "2025-09-30"
+    description: "Optimization feedback — L2 granularity (quarterly/industry/cap)"
+
+  test:
+    start: "2025-10-01"
+    end:   null          # null = today (dynamic)
+    description: "Unseen holdout — human-only, never exposed to Agent"
+
+
+# ── Data Sources ─────────────────────────────────────────────────────────────
+
+datasets:
+
+  # ── §1 Daily Price Data (always enabled) ─────────────────────────────────
+  # Uses front-adjusted (qfq) prices for signal calculation.
+  # Fall back to raw dwd_daily_price if qfq table is absent.
+  price_daily:
+    enabled: true
+    description: "Daily OHLCV + turnover for all A-shares (前复权 qfq preferred)"
+    table: "dwd_daily_price_qfq"    # actual DuckDB table name
+    table_fallback: "dwd_daily_price"
+    frequency: "D"
+    join_key: "ts_code"             # actual PK column in the table
+    date_column: "trade_date"
+    columns:
+      # DB column name : exposed name used by signals
+      open:     open
+      high:     high
+      low:      low
+      close:    close
+      vol:      volume              # DB uses 'vol', signals see 'volume'
+      amount:   turnover            # 成交额(元), signals see 'turnover'
+      pct_chg:  pct_change_raw      # raw daily return (%)
+    required: true                  # DataPreparer raises if both tables missing
+
+  # ── §2 Index Daily Data (benchmark) ──────────────────────────────────────
+  # dwd_index_daily stores one row per (index_code, trade_date).
+  # DataPreparer pivots HS300 and ZZ500 into side-by-side columns.
+  index_daily:
+    enabled: true
+    description: "Daily close for HS300 (000300.SH) and ZZ500 (000905.SH) benchmarks"
+    table: "dwd_index_daily"        # actual DuckDB table name
+    frequency: "D"
+    join_key: null                  # broadcast to all stocks (joined on date only)
+    date_column: "trade_date"
+    # Special: DataPreparer reads these as pivot codes, not raw column names.
+    # Each key is an index_code value; each value is the exposed column name.
+    index_codes:
+      "000300.SH": hs300            # 沪深300 close → column 'hs300'
+      "000905.SH": zz500            # 中证500 close → column 'zz500'
+    columns: {}                     # populated dynamically via index_codes pivot
+    required: false                 # graceful skip if table absent
+
+  # ── §3 Daily Basic (market-cap, PE, PB) ──────────────────────────────────
+  daily_basic:
+    enabled: true
+    description: "Daily market cap, PE, PB, PS from tushare (dwd_daily_basic)"
+    table: "dwd_daily_basic"        # actual DuckDB table name
+    frequency: "D"
+    join_key: "ts_code"             # actual PK column in the table
+    date_column: "trade_date"
+    columns:
+      total_mv:   total_mv          # 总市值 (万元)
+      circ_mv:    circ_mv           # 流通市值 (万元)
+      pe_ttm:     pe_ttm            # 市盈率 TTM
+      pb:         pb                # 市净率
+      ps_ttm:     ps_ttm            # 市销率 TTM
+      dv_ratio:   dv_ratio          # 股息率 (%)
+      turn_rate:  turnover_rate     # DB col is turn_rate → signals see turnover_rate
+    required: false
+
+  # ── §4 Fundamentals — QUARTERLY (reserved, not yet populated) ────────────
+  # To enable:
+  #   1. Set enabled: true
+  #   2. Run: python data/updaters/fetcher_fundamentals.py
+  #   3. Verify DuckDB table 'dwd_income' or 'quarterly_financials' is populated
+  #
+  # fundamentals_quarterly:
+  #   enabled: false
+  #   description: "Quarterly financial statements (revenue, profit, ROE, etc.)"
+  #   table: "dwd_income"
+  #   frequency: "Q"
+  #   join_key: "ts_code"
+  #   date_column: "ann_date"
+  #   fill_method: "ffill"
+  #   columns:
+  #     revenue:      revenue
+  #     n_income:     net_profit
+  #   required: false
+
+
+# ── Stock Universe ────────────────────────────────────────────────────────────
+universe:
+  description: "Which stocks are included in evaluation"
+  source_table: "dwd_daily_price"   # use raw table for universe derivation
+  code_column:  "ts_code"           # PK column name
+  filters:
+    min_trading_days: 252
+    exclude_st: true
+    exclude_ipo_days: 60
+
+
+# ── Evaluation Config ─────────────────────────────────────────────────────────
+evaluation:
+  l1_forward_returns: [3, 5, 10, 20]
+  l1_primary_metric: "sharpe_t5"
+  l2_groupby:
+    - quarter
+    - industry
+    - cap_group
+  cap_group_thresholds_bn:
+    small: 20
+    mid:   200
+
+# ── Resource Limits ───────────────────────────────────────────────────────────
+resources:
+  subprocess_memory_limit_gb: 1
+  subprocess_timeout_sec: 60
+  orchestrator_pause_free_mem_gb: 2
+  optuna_n_trials: 50
+  optuna_direction: "maximize"
+  max_iterations_default: 100
+  memory_compress_every_n: 10

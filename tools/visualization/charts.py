@@ -353,10 +353,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -413,9 +410,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -490,10 +485,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -519,7 +511,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -547,10 +539,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -609,10 +598,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -688,10 +674,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,
@@ -807,10 +790,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -867,9 +847,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -944,10 +922,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -973,7 +948,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -1001,10 +976,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -1063,10 +1035,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -1142,10 +1111,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,
@@ -1254,10 +1220,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -1314,9 +1277,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -1391,10 +1352,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -1420,7 +1378,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -1448,10 +1406,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -1510,10 +1465,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -1589,10 +1541,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,
@@ -1711,10 +1660,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -1771,9 +1717,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -1848,10 +1792,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -1877,7 +1818,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -1905,10 +1846,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -1967,10 +1905,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -2046,10 +1981,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,
@@ -2165,10 +2097,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -2225,9 +2154,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -2302,10 +2229,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -2331,7 +2255,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -2359,10 +2283,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -2421,10 +2342,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -2500,10 +2418,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,
@@ -2608,10 +2523,7 @@ class ChartPlotter:
         plt.suptitle(title or f'{factor_name} 分布分析')
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -2668,9 +2580,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -2745,10 +2655,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -2774,7 +2681,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -2802,10 +2709,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -2864,10 +2768,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -2943,10 +2844,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,
@@ -3048,10 +2946,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -3108,9 +3003,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -3185,10 +3078,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -3214,7 +3104,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -3242,10 +3132,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -3304,10 +3191,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -3383,10 +3267,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,
@@ -3500,10 +3381,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trades_on_price(
         self,
@@ -3560,9 +3438,7 @@ class ChartPlotter:
             table.scale(1.2, 1.2)
             
             plt.tight_layout()
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            self._display_or_save(save_path)
             return
         
         # 绘制K线图并叠加交易记录
@@ -3637,10 +3513,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_equity_curve(
         self,
@@ -3666,7 +3539,7 @@ class ChartPlotter:
             return
         
         # 计算累计收益
-        daily_pnl['cumulative_pnl'] = daily_pnl['pnl'].cumsum()
+        daily_pnl['cumulative_pnl'] = daily_pnl['daily_pnl'].cumsum()
         daily_pnl['total_value_normalized'] = daily_pnl['total_value'] / daily_pnl['total_value'].iloc[0]
         
         fig, ax = plt.subplots(figsize=self.figsize)
@@ -3694,10 +3567,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_performance(
         self,
@@ -3756,10 +3626,7 @@ class ChartPlotter:
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_trade_statistics(
         self,
@@ -3835,10 +3702,7 @@ class ChartPlotter:
         plt.suptitle(title or f'交易统计 - {run_id}', fontsize=14)
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        self._display_or_save(save_path)
 
     def plot_backtest_full_report(
         self,

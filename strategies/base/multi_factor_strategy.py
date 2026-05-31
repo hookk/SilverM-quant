@@ -297,7 +297,7 @@ class MultiFactorStrategy(BaseStrategy):
     def next(self):
         """策略主逻辑"""
         # 检查是否有未完成的订单
-        if self.order:
+        if self.order is not None:  # 修复: backtrader Order对象不支持直接bool判断
             return
         
         # 生成信号

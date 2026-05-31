@@ -11,6 +11,7 @@
 """
 
 import numpy as np
+import pandas as pd
 from datetime import datetime
 
 from strategies.registry import register
@@ -32,7 +33,7 @@ class TemplateStrategy(BaseStrategy):
     """策略模板类 - TODO: 修改为你的策略描述"""
 
     params = (
-        ('threshold', 8.0),
+        ('threshold', 6.0),  # 合理范围5~7；原8.0与RSI<30+涨幅>3%互斥永不触发
         ('stop_loss_pct', 0.03),
         ('多空线缓冲', True),
     )
@@ -70,13 +71,13 @@ class TemplateStrategy(BaseStrategy):
             score += 2.0
         if self._calculate_dif() > 0:
             score += 1.0
-        if self._calculate_rsi() < 30:
+        if self._calculate_rsi() < 50:  # 改为<50；原<30与涨幅>3%互斥
             score += 2.0
         if self.volume[0] > self._calculate_ma(60):
             score += 2.0
         if len(self) >= 2:
             pct = (self.close[0] - self.close[-1]) / self.close[-1] * 100
-            if pct > 3.0:
+            if pct > 1.0:  # 改为>1%；原>3%与RSI<30互斥
                 score += 1.0
         return score
 
@@ -122,28 +123,31 @@ class TemplateStrategy(BaseStrategy):
         前10日涨幅 = (close / close_arr[-10] - 1) * 100 if len(close_arr) >= 10 else 0
         前50日涨幅 = (close / close_arr[-50] - 1) * 100 if len(close_arr) >= 50 else 0
 
-        条件1基础 = (close < open_price) and (high == np.max(high_arr[-60:])) and (前10日涨幅 > 10 or 前50日涨幅 > 50)
-        条件1评分 = 0
-        if 条件1基础:
-            hhv_vol = np.max(volume_arr[-60:])
-            if volume >= hhv_vol:
-                条件1评分 = 10
-            elif volume * 1.42 >= hhv_vol:
-                条件1评分 = 6.5
-
-        条件1 = 条件1基础 and (volume * 1.42 >= np.max(volume_arr[-60:]))
-
+        # 安全初始化：避免数据不足时变量未定义
+        条件1基础 = False
+        条件1 = False
         条件2基础 = False
-        if len(high_arr) >= 60:
-            hhv_h_4 = np.max(high_arr[-4:])
+        条件1评分 = 0
+        条件2评分 = 0
+
+        if len(high_arr) >= 60 and len(volume_arr) >= 60:
+            hhv_vol_60 = np.max(volume_arr[-60:])
+            条件1基础 = (close < open_price) and (high == np.max(high_arr[-60:])) and (前10日涨幅 > 10 or 前50日涨幅 > 50)
+            if 条件1基础:
+                if volume >= hhv_vol_60:
+                    条件1评分 = 10
+                elif volume * 1.42 >= hhv_vol_60:
+                    条件1评分 = 6.5
+            条件1 = 条件1基础 and (volume * 1.42 >= hhv_vol_60)
+
+            hhv_h_4 = np.max(high_arr[-4:]) if len(high_arr) >= 4 else high
             hhv_h_60 = np.max(high_arr[-60:])
             if hhv_h_4 == hhv_h_60 and high != hhv_h_60:
-                vol_ma5 = np.mean(volume_arr[-5:])
-                涨幅 = (close - close_arr[-2]) / close_arr[-2] * 100 if close_arr[-2] != 0 else 0
+                vol_ma5 = np.mean(volume_arr[-5:]) if len(volume_arr) >= 5 else volume
+                涨幅 = (close - close_arr[-2]) / close_arr[-2] * 100 if len(close_arr) >= 2 and close_arr[-2] != 0 else 0
                 if (volume > vol_ma5) and 涨幅 < -0.03 and close < open_price:
                     条件2基础 = True
 
-        条件2评分 = 0
         前3天最高位距今 = 0
         if len(high_arr) >= 3:
             recent_3 = high_arr[-3:]
@@ -156,18 +160,13 @@ class TemplateStrategy(BaseStrategy):
             elif volume >= ref_vol * 0.80:
                 条件2评分 = 7.8
 
-        dif_history = []
-        for i in range(len(close_arr)):
-            hist_close = close_arr[-i-1] if i < len(close_arr) else close
-            hist_ema12 = hist_close
-            for j_idx in range(1, min(13, i+1)):
-                if i+j_idx < len(close_arr):
-                    hist_ema12 = hist_ema12 * (11/13) + close_arr[-i-1-j_idx] * (2/13)
-            hist_ema26 = hist_close
-            for j_idx in range(1, min(27, i+1)):
-                if i+j_idx < len(close_arr):
-                    hist_ema26 = hist_ema26 * (25/27) + close_arr[-i-1-j_idx] * (2/27)
-            dif_history.append(hist_ema12 - hist_ema26)
+        # --- 使用向量化EMA计算，替代原来的O(n²)嵌套循环 ---
+        if len(close_arr) >= 26:
+            ema12 = pd.Series(close_arr).ewm(span=12, adjust=False).mean().values
+            ema26 = pd.Series(close_arr).ewm(span=26, adjust=False).mean().values
+            dif_history = list(ema12 - ema26)
+        else:
+            dif_history = [dif] * len(close_arr)
 
         hhv_dif_60 = np.max(dif_history[-60:]) if len(dif_history) >= 60 else dif
 
@@ -175,9 +174,9 @@ class TemplateStrategy(BaseStrategy):
         实体 = open_price - close
         上影线 = high - max(close, open_price)
         加分2 = 0.5 if (条件1 and 上影线 > 实体 / 2 and close > close_arr[-1]) else 0
-        加分3 = 1.8 if 条件2 else 0
-        加分4 = 0.8 if (条件2 and j < k < d) else 0
-        加分5 = 2 if (条件1 or 条件2) and close < close_arr[-1] else 0
+        加分3 = 1.8 if 条件2基础 else 0  # 修复: 原为未定义的"条件2"，应为"条件2基础"
+        加分4 = 0.8 if (条件2基础 and j < k < d) else 0
+        加分5 = 2 if (条件1 or 条件2基础) and close < close_arr[-1] else 0
 
         天量柱 = len(volume_arr) >= 2 and (volume_arr[-1] > volume_arr[-2] * 1.8) and (volume >= volume_arr[-1] * 1.8)
         加分6 = 3 if 天量柱 else 0

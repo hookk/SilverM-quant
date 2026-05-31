@@ -32,7 +32,25 @@ class DatabaseManager:
         
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # ── WAL 安全检查：若存在 .wal 文件，先尝试用只读连接触发 checkpoint，
+        #    若失败（WAL 损坏）则删除 .wal 文件后重新连接。
+        #    背景：ALTER TABLE 在某些 DuckDB 版本下写入的 WAL 记录在重放时
+        #    会触发 "GetDefaultDatabase with no default database set" 内部断言崩溃。
+        wal_path = self.db_path.parent / (self.db_path.name + '.wal')
+        if wal_path.exists():
+            try:
+                _test = duckdb.connect(str(self.db_path))
+                _test.execute("CHECKPOINT")
+                _test.close()
+            except Exception as wal_err:
+                print(f"[WAL] WAL 文件疑似损坏 ({wal_err})，删除后重建: {wal_path}")
+                try:
+                    wal_path.unlink()
+                    print(f"[WAL] 已删除损坏的 WAL 文件: {wal_path}")
+                except Exception as del_err:
+                    print(f"[WAL] 删除 WAL 文件失败: {del_err}")
+
         # 建立连接
         self.conn = duckdb.connect(str(self.db_path))
         
@@ -372,63 +390,152 @@ class DatabaseManager:
         return run_id
     
     def save_backtest_trades(self, run_id: str, df: pd.DataFrame):
-        """保存回测交易记录"""
+        """保存回测交易记录
+        
+        修复说明：
+        原代码 INSERT 时使用 'size' 列名，但 backtest_trades 表定义的是 'volume'；
+        同时缺少 date 列，多余引用了不存在的 size 列。
+        本修复：对齐列名，仅插入表中实际存在的列。
+        """
         if len(df) == 0:
             return
-            
+
         df = df.copy()
         df['run_id'] = run_id
-        
-        # 确保datetime列类型正确
+
+        # 统一 datetime 列
         if 'datetime' in df.columns:
             df['datetime'] = pd.to_datetime(df['datetime'])
-        
-        # 添加自增ID
+        elif 'date' in df.columns:
+            df['datetime'] = pd.to_datetime(df['date'])
+
+        # date 列（DATE 类型，从 datetime 派生）
+        if 'date' not in df.columns and 'datetime' in df.columns:
+            df['date'] = df['datetime'].dt.date
+
+        # size → volume 列名兼容
+        if 'volume' not in df.columns and 'size' in df.columns:
+            df['volume'] = df['size']
+
+        # 添加自增 ID
         existing_count = self.conn.execute(
             f"SELECT COUNT(*) FROM backtest_trades WHERE run_id = '{run_id}'"
         ).fetchone()[0]
         df['id'] = range(existing_count, existing_count + len(df))
-        
-        # 直接使用INSERT语句插入数据
+
+        # 只插入表中实际存在的列（避免列名不匹配导致报错）
+        # backtest_trades 表列: id, run_id, date, datetime, code, name, industry,
+        #                        market_cap_group, action, price, volume, amount,
+        #                        commission, tax, total_cost, signal_type
+        insert_cols = [
+            'id', 'run_id', 'date', 'datetime', 'code', 'name',
+            'industry', 'market_cap_group', 'action', 'price',
+            'volume', 'amount', 'commission', 'tax', 'total_cost', 'signal_type'
+        ]
+
+        def safe_val(v):
+            """将 Python 值转换为 SQL 字面量"""
+            if v is None:
+                return 'NULL'
+            try:
+                if pd.isna(v):
+                    return 'NULL'
+            except Exception:
+                pass
+            if isinstance(v, (pd.Timestamp, datetime)):
+                return f"'{v.strftime('%Y-%m-%d %H:%M:%S')}'"
+            if hasattr(v, 'date') and callable(v.date):  # date 对象
+                return f"'{v}'"
+            if isinstance(v, str):
+                return "'" + v.replace("'", "''") + "'"
+            if isinstance(v, bool):
+                return 'TRUE' if v else 'FALSE'
+            return str(v)
+
         for _, row in df.iterrows():
-            datetime_val = row['datetime'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['datetime']) else None
-            self.conn.execute(f"""
-                INSERT INTO backtest_trades 
-                (id, run_id, datetime, code, name, action, price, size, amount, commission, industry, market_cap_group)
-                VALUES 
-                ({row['id']}, '{row.get('run_id', run_id)}', {f"'{datetime_val}'" if datetime_val else "NULL"}, 
-                 {f"'{row.get('code')}'" if row.get('code') else "NULL"}, 
-                 {f"'{row.get('name')}'" if row.get('name') else "NULL"}, 
-                 {f"'{row.get('action')}'" if row.get('action') else "NULL"}, 
-                 {row.get('price') if pd.notna(row.get('price')) else "NULL"}, 
-                 {row.get('size') if pd.notna(row.get('size')) else "NULL"}, 
-                 {row.get('amount') if pd.notna(row.get('amount')) else "NULL"}, 
-                 {row.get('commission') if pd.notna(row.get('commission')) else "NULL"}, 
-                 {f"'{row.get('industry')}'" if row.get('industry') else "NULL"}, 
-                 {f"'{row.get('market_cap_group')}'" if row.get('market_cap_group') else "NULL"})
-            """)
+            col_vals = []
+            for col in insert_cols:
+                raw = row.get(col)
+                col_vals.append(safe_val(raw))
+            cols_str = ', '.join(insert_cols)
+            vals_str = ', '.join(col_vals)
+            try:
+                self.conn.execute(
+                    f"INSERT OR IGNORE INTO backtest_trades ({cols_str}) VALUES ({vals_str})"
+                )
+            except Exception as e:
+                print(f"插入交易记录失败 (run_id={run_id}): {e}")
+
     
     def save_backtest_daily_pnl(self, run_id: str, df: pd.DataFrame):
-        """保存回测日度盈亏"""
+        """保存回测日度盈亏
+        
+        修复说明：
+        原代码使用 SELECT * 批量插入，但 df 列名（pnl, pnl_pct）与表定义（daily_pnl, daily_return）
+        不一致，且 df 缺少 cash/market_value/cumulative_return/benchmark_return/excess_return/drawdown。
+        本修复：显式映射列名后，只插入表中存在的列，缺失列填 NULL。
+        
+        backtest_daily_pnl 表列：
+          run_id, date, total_value, cash, market_value,
+          daily_pnl, daily_return, cumulative_return,
+          benchmark_return, excess_return, drawdown, positions
+        """
         if len(df) == 0:
             return
-            
+
         df = df.copy()
         df['run_id'] = run_id
-        
-        # 转换positions列为JSON
+
+        # 列名兼容映射
+        rename_map = {
+            'pnl':     'daily_pnl',
+            'pnl_pct': 'daily_return',
+        }
+        df.rename(columns=rename_map, inplace=True)
+
+        # 确保 date 列存在
+        if 'date' not in df.columns and 'datetime' in df.columns:
+            df['date'] = pd.to_datetime(df['datetime']).dt.date
+
+        # positions 列转 JSON 字符串
         if 'positions' in df.columns:
-            df['positions'] = df['positions'].apply(json.dumps)
-        
-        self.conn.execute("""
-            CREATE TEMPORARY TABLE temp_pnl AS SELECT * FROM df;
-            
-            INSERT OR REPLACE INTO backtest_daily_pnl 
-            SELECT * FROM temp_pnl;
-            
-            DROP TABLE temp_pnl;
-        """)
-    
+            df['positions'] = df['positions'].apply(
+                lambda x: json.dumps(x) if x is not None and not (isinstance(x, float) and pd.isna(x)) else None
+            )
+
+        # 表中实际存在的列
+        table_cols = [
+            'run_id', 'date', 'total_value', 'cash', 'market_value',
+            'daily_pnl', 'daily_return', 'cumulative_return',
+            'benchmark_return', 'excess_return', 'drawdown', 'positions'
+        ]
+
+        def safe_val(v):
+            if v is None:
+                return 'NULL'
+            try:
+                if pd.isna(v):
+                    return 'NULL'
+            except Exception:
+                pass
+            if isinstance(v, str):
+                return "'" + v.replace("'", "''") + "'"
+            if hasattr(v, 'strftime'):
+                return f"'{v}'"
+            if isinstance(v, bool):
+                return 'TRUE' if v else 'FALSE'
+            return str(v)
+
+        cols_str = ', '.join(table_cols)
+        for _, row in df.iterrows():
+            vals = [safe_val(row.get(col)) for col in table_cols]
+            try:
+                self.conn.execute(
+                    f"INSERT OR REPLACE INTO backtest_daily_pnl ({cols_str}) VALUES ({', '.join(vals)})"
+                )
+            except Exception as e:
+                print(f"插入日度盈亏失败 (run_id={run_id}): {e}")
+
     def save_backtest_performance(self, run_id: str, metrics: Dict[str, Any]):
         """保存回测绩效指标"""
         # 转换JSON字段
@@ -487,13 +594,42 @@ class DatabaseManager:
     # ==================== 批量回测结果 ====================
 
     def save_batch_backtest_result(self, batch_id: str, result: Dict[str, Any]):
-        """保存批量回测单条结果"""
+        """保存批量回测单条结果（支持新增的批次元数据列）"""
+
+        def _norm_date(d):
+            """将 YYYYMMDD / YYYY-MM-DD / None 统一转为 YYYY-MM-DD 字符串，None 原样返回"""
+            if d is None:
+                return None
+            s = str(d).strip()
+            if len(s) == 8 and s.isdigit():
+                # YYYYMMDD → YYYY-MM-DD
+                return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+            return s  # 已是 YYYY-MM-DD 或其他格式，直接返回
+
+        # DuckDB 的 DEFAULT NEXTVAL(...) 在部分版本中通过 conn.execute() 直接
+        # INSERT 时不会自动填充，导致 NOT NULL constraint 报错。
+        # 解决方案：显式调用 NEXTVAL 获取下一个序列值后，将 result_id 一并写入。
+        try:
+            next_id = self.conn.execute(
+                "SELECT NEXTVAL('batch_backtest_results_seq')"
+            ).fetchone()[0]
+        except Exception:
+            # 序列不存在时（旧库未建序列）回退到 MAX+1
+            row = self.conn.execute(
+                "SELECT COALESCE(MAX(result_id), 0) + 1 FROM batch_backtest_results"
+            ).fetchone()
+            next_id = row[0] if row else 1
+
         self.conn.execute("""
-            INSERT INTO batch_backtest_results 
-            (batch_id, stock_code, stock_name, status, total_return, annualized_return,
-             max_drawdown, sharpe_ratio, win_rate, total_trades, final_value, initial_cash, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO batch_backtest_results
+            (result_id, batch_id, stock_code, stock_name, status,
+             total_return, annualized_return, max_drawdown, sharpe_ratio,
+             win_rate, total_trades, final_value, initial_cash,
+             error_message, strategy_name, start_date, end_date,
+             initial_capital, total_stocks, valid_stocks)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
+            next_id,
             batch_id,
             result.get('code'),
             result.get('name'),
@@ -506,7 +642,13 @@ class DatabaseManager:
             result.get('total_trades', 0),
             result.get('final_value', 0),
             result.get('initial_cash', 0),
-            result.get('error') or result.get('error_message')
+            result.get('error') or result.get('error_message'),
+            result.get('strategy_name'),
+            _norm_date(result.get('start_date')),
+            _norm_date(result.get('end_date')),
+            result.get('initial_capital'),
+            result.get('total_stocks'),
+            result.get('valid_stocks'),
         ])
 
     def get_batch_backtest_results(self, batch_id: str = None) -> pd.DataFrame:
@@ -636,16 +778,16 @@ class DatabaseManager:
     # ==================== 策略注册表操作 ====================
 
     def save_strategy(self, strategy_data: dict) -> bool:
-        """保存策略到 strategy_registry（插入或更新）
-
-        Args:
-            strategy_data: 包含策略信息的字典，必需字段:
-                - name: 策略名称
-                - class_path: 策略类路径
-                可选字段:
-                - display_name, source_file, description, version
-                - author, status, strategy_type, threshold_required
-                - min_data_days, param_schema
+        """保存策略到 strategy_registry（插入或更新，不覆盖已归档策略的状态）
+        
+        修复说明：
+        原实现使用 ON CONFLICT ... DO UPDATE SET col = excluded.col 语法，
+        DuckDB 要求 excluded 虚拟表列数与 INSERT 的列数严格匹配，当表定义列数
+        与插入列数不一致时抛出：
+          Catalog Binder Error: table "excluded" has N columns available but M columns specified
+        
+        修复方案：改为先检查记录是否存在，存在则 UPDATE，不存在则 INSERT，
+        完全绕开 excluded 虚拟表，同时保持"不覆盖已归档策略 status"的逻辑。
         """
         required_fields = ['name', 'class_path']
         for field in required_fields:
@@ -662,36 +804,53 @@ class DatabaseManager:
             'threshold_required', 'min_data_days', 'param_schema'
         ]
 
-        values = []
-        for col in strategy_cols:
-            val = strategy_data.get(col)
+        # ── 辅助：将 Python 值转成可安全嵌入 SQL 的字符串 ──────────────────
+        def to_sql_val(val):
             if val is None:
-                values.append("NULL")
-            elif isinstance(val, (dict, list)):
-                values.append(f"'{json.dumps(val)}'")
-            elif isinstance(val, str):
-                escaped = val.replace("'", "''")
-                values.append(f"'{escaped}'")
-            else:
-                values.append(f"'{val}'")
+                return "NULL"
+            if isinstance(val, (dict, list)):
+                return "'" + json.dumps(val).replace("'", "''") + "'"
+            if isinstance(val, bool):
+                return "TRUE" if val else "FALSE"
+            if isinstance(val, (int, float)):
+                return str(val)
+            return "'" + str(val).replace("'", "''") + "'"
 
-        cols_str = ', '.join(strategy_cols)
-        vals_str = ', '.join(values)
-
-        update_parts = [f"{c} = excluded.{c}" for c in strategy_cols if c not in ['id', 'name']]
-
-        sql = f"""
-            INSERT INTO strategy_registry ({cols_str})
-            VALUES ({vals_str})
-            ON CONFLICT (name) DO UPDATE SET
-                {', '.join(update_parts)};
-        """
+        name = strategy_data['name']
+        name_escaped = name.replace("'", "''")
 
         try:
-            self.conn.execute(sql)
+            # ── 1. 检查记录是否已存在 ───────────────────────────────────────
+            existing = self.conn.execute(
+                f"SELECT status FROM strategy_registry WHERE name = '{name_escaped}'"
+            ).fetchone()
+
+            if existing is None:
+                # ── 2a. 不存在：直接 INSERT ────────────────────────────────
+                cols_str = ', '.join(strategy_cols)
+                vals_str = ', '.join(to_sql_val(strategy_data.get(c)) for c in strategy_cols)
+                self.conn.execute(
+                    f"INSERT INTO strategy_registry ({cols_str}) VALUES ({vals_str})"
+                )
+            else:
+                # ── 2b. 已存在：UPDATE，但不覆盖 status（保留已归档状态） ──
+                # 不更新: id, name, status（关键：已 archived 的不重新激活）
+                update_cols = [c for c in strategy_cols if c not in ('id', 'name', 'status')]
+                set_parts = [
+                    f"{c} = {to_sql_val(strategy_data.get(c))}"
+                    for c in update_cols
+                ]
+                set_parts.append("updated_at = CURRENT_TIMESTAMP")
+                self.conn.execute(
+                    f"UPDATE strategy_registry SET {', '.join(set_parts)} "
+                    f"WHERE name = '{name_escaped}'"
+                )
+
             return True
         except Exception as e:
             print(f"保存策略失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def get_strategy(self, name: str) -> Optional[dict]:

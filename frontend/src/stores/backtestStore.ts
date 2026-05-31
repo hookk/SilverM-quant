@@ -7,6 +7,9 @@ export interface Strategy {
   description?: string
   threshold_required?: boolean
   min_data_days?: number
+  version?: string
+  author?: string
+  class_path?: string
 }
 
 export interface BacktestParams {
@@ -40,7 +43,6 @@ export interface BacktestResult {
   error?: string | null
 }
 
-// 批量回测结果接口
 export interface BatchBacktestResult {
   task_id: string
   total_stocks: number
@@ -85,19 +87,20 @@ export const useBacktestStore = defineStore('backtest', () => {
   // Getters
   const hasResult = computed(() => currentResult.value !== null && currentResult.value.status === 'completed')
   const isRunning = computed(() => isLoading.value)
-
-  // Batch getters
   const isBatchRunning = computed(() => batchStatus.value === 'running' || batchStatus.value === 'pending')
   const hasBatchResult = computed(() => batchResult.value !== null && batchStatus.value === 'completed')
 
-  // Actions
+  // ✅ 修复：调用 detail=true 接口，返回完整对象数组，兼容字符串数组
   async function fetchStrategies() {
     try {
       isLoading.value = true
       error.value = null
-      const response = await axios.get('/api/backtest/strategies')
-      // API 返回字符串数组，需要转换为 Strategy 对象
-      strategies.value = (response.data.strategies || []).map((name: string) => ({ name }))
+      const response = await axios.get('/api/backtest/strategies?detail=true')
+      const raw: (string | Strategy)[] = response.data.strategies || []
+      // 兼容两种格式：字符串数组（旧接口）或对象数组（新接口）
+      strategies.value = raw.map((item) =>
+        typeof item === 'string' ? { name: item } : item
+      )
     } catch (e) {
       error.value = '获取策略列表失败'
       console.error('Failed to fetch strategies:', e)
@@ -123,7 +126,7 @@ export const useBacktestStore = defineStore('backtest', () => {
       currentResult.value = { run_id: '', status: 'running' }
 
       const params: BacktestParams = {
-        strategy_name: selectedStrategies.value[0], // API expects single strategy name
+        strategy_name: selectedStrategies.value[0], // API 只支持单策略
         start_date: startDate.value.replace(/-/g, ''),
         end_date: endDate.value.replace(/-/g, ''),
         initial_capital: initialCapital.value
@@ -137,18 +140,41 @@ export const useBacktestStore = defineStore('backtest', () => {
 
       const response = await axios.post('/api/backtest/run', params)
 
+      if (response.data.error) {
+        throw new Error(response.data.error)
+      }
+
+      // 后端 /run 只返回部分 metrics，补齐前端需要的所有字段
+      const rawMetrics = response.data.metrics || {}
+      const fullMetrics: PerformanceMetrics = {
+        total_return:         rawMetrics.total_return      ?? 0,
+        annual_return:        rawMetrics.annual_return     ?? rawMetrics.annualized_return ?? 0,
+        benchmark_return:     rawMetrics.benchmark_return  ?? 0,
+        excess_return:        rawMetrics.excess_return     ?? rawMetrics.total_return ?? 0,
+        sharpe_ratio:         rawMetrics.sharpe_ratio      ?? 0,
+        sortino_ratio:        rawMetrics.sortino_ratio     ?? 0,
+        calmar_ratio:         rawMetrics.calmar_ratio      ?? 0,
+        max_drawdown:         rawMetrics.max_drawdown      ?? 0,
+        max_drawdown_duration:rawMetrics.max_drawdown_duration ?? 0,
+        volatility:           rawMetrics.volatility        ?? 0,
+        win_rate:             rawMetrics.win_rate          ?? 0,
+        profit_loss_ratio:    rawMetrics.profit_loss_ratio ?? 0,
+        total_trades:         rawMetrics.total_trades      ?? 0,
+      }
+
       currentResult.value = {
-        run_id: response.data.run_id,
-        status: response.data.status || 'completed',
-        metrics: response.data.metrics,
-        error: response.data.error
+        run_id: response.data.run_id || '',
+        status: 'completed',
+        metrics: fullMetrics,
+        error: null
       }
     } catch (e: any) {
-      error.value = e.response?.data?.error || '回测运行失败'
+      const errMsg = e.response?.data?.error || e.message || '回测运行失败'
+      error.value = `回测失败: ${errMsg}`
       currentResult.value = {
         run_id: '',
         status: 'failed',
-        error: error.value
+        error: errMsg
       }
       console.error('Failed to run backtest:', e)
     } finally {
@@ -156,7 +182,6 @@ export const useBacktestStore = defineStore('backtest', () => {
     }
   }
 
-  // 轮询批量回测任务状态
   function pollBatchTask() {
     if (!batchTaskId.value) return
 
@@ -170,40 +195,52 @@ export const useBacktestStore = defineStore('backtest', () => {
         batchMessage.value = data.message
 
         if (data.status === 'completed') {
-          // 获取最终结果
-          const resultRes = await axios.get(`/api/backtest/batch-results/${batchTaskId.value}`)
-          batchResult.value = resultRes.data
+          try {
+            const resultRes = await axios.get(`/api/backtest/batch-results/${batchTaskId.value}`)
+            batchResult.value = resultRes.data
+          } catch (resultErr: any) {
+            console.error('获取回测结果失败:', resultErr)
+            batchError.value = resultErr.response?.data?.error || '获取结果失败'
+            batchMessage.value = `❌ 获取结果失败: ${batchError.value}`
+            batchStatus.value = 'failed'
+            stopPolling()
+            return
+          }
           batchStatus.value = 'completed'
           batchProgress.value = 100
-          batchMessage.value = '回测完成'
+          batchMessage.value = '✅ 回测完成'
           stopPolling()
         } else if (data.status === 'failed') {
-          batchError.value = data.error_message || '回测失败'
+          // 优先显示 message（后端已注入 traceback 短摘要），fallback 到 error_message
+          const errDetail = data.message || data.error_message || '回测失败，请查看服务端日志'
+          batchError.value = data.error_message || errDetail
+          batchMessage.value = `❌ ${errDetail}`
+          batchProgress.value = data.progress ?? batchProgress.value
           batchStatus.value = 'failed'
           stopPolling()
         }
       } catch (e: any) {
         console.error('轮询失败:', e)
-        batchError.value = e.response?.data?.error || '轮询失败'
+        const errMsg = e.response?.data?.error || e.message || '网络请求失败'
+        batchError.value = errMsg
+        batchMessage.value = `❌ 轮询失败: ${errMsg}`
         batchStatus.value = 'failed'
         stopPolling()
       }
     }
 
-    // 每2秒轮询
     batchPollInterval.value = window.setInterval(poll, 2000)
 
-    // 30分钟超时
     window.setTimeout(() => {
       if (batchStatus.value === 'running' || batchStatus.value === 'pending') {
-        batchError.value = '回测超时（30分钟）'
+        batchError.value = '回测超时（30分钟），任务仍在后台运行'
+        batchMessage.value = '❌ 回测超时（30分钟），可刷新页面重新查询历史'
         batchStatus.value = 'failed'
         stopPolling()
       }
     }, 30 * 60 * 1000)
   }
 
-  // 停止轮询
   function stopPolling() {
     if (batchPollInterval.value !== null) {
       clearInterval(batchPollInterval.value)
@@ -211,10 +248,8 @@ export const useBacktestStore = defineStore('backtest', () => {
     }
   }
 
-  // 取消批量回测任务
   async function cancelBatchBacktest() {
     if (!batchTaskId.value) return
-
     try {
       await axios.delete(`/api/backtest/batch-task/${batchTaskId.value}`)
       batchStatus.value = 'cancelled'
@@ -225,7 +260,6 @@ export const useBacktestStore = defineStore('backtest', () => {
     }
   }
 
-  // 提交批量回测任务
   async function submitBatchBacktest(paramGrid?: string) {
     if (selectedStrategies.value.length === 0) {
       batchError.value = '请至少选择一个策略'
@@ -250,7 +284,6 @@ export const useBacktestStore = defineStore('backtest', () => {
         initial_capital: initialCapital.value
       }
 
-      // 如果不是全部股票，添加股票列表
       if (stockSelectionMode.value !== 'all' && selectedStocks.value.length > 0) {
         params.stock_list = selectedStocks.value
       }
@@ -265,7 +298,6 @@ export const useBacktestStore = defineStore('backtest', () => {
       batchStatus.value = 'pending'
       batchMessage.value = '任务已提交...'
 
-      // 开始轮询
       pollBatchTask()
     } catch (e: any) {
       batchError.value = e.response?.data?.error || '提交失败'
@@ -274,7 +306,6 @@ export const useBacktestStore = defineStore('backtest', () => {
     }
   }
 
-  // 重置批量回测状态
   function resetBatchResult() {
     stopPolling()
     batchTaskId.value = null
@@ -305,7 +336,6 @@ export const useBacktestStore = defineStore('backtest', () => {
   }
 
   return {
-    // State
     strategies,
     selectedStrategies,
     startDate,
@@ -316,17 +346,14 @@ export const useBacktestStore = defineStore('backtest', () => {
     isLoading,
     currentResult,
     error,
-    // Getters
     hasResult,
     isRunning,
-    // Actions
     fetchStrategies,
     runBacktest,
     resetResult,
     setDateRange,
     setSelectedStrategies,
     setStockSelection,
-    // Batch exports
     batchTaskId,
     batchStatus,
     batchProgress,

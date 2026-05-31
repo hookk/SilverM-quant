@@ -24,9 +24,11 @@ const currentPage = ref(1)
 const pageSize = ref(10)
 const pageSizeOptions = [10, 20, 50]
 
+// 空字符串 '' 代表"全部策略"，不传 strategy_name 参数给后端
 const filterStrategyName = ref('')
 const filterStartDate = ref('')
 const filterEndDate = ref('')
+const strategyOptions = ref<string[]>([])
 
 const sortColumn = ref<string>('completed_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
@@ -35,6 +37,16 @@ const isLoading = ref(false)
 
 const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
 
+async function fetchStrategyOptions() {
+  try {
+    const response = await axios.get('/api/backtest/strategies')
+    strategyOptions.value = response.data.strategies || []
+  } catch (e) {
+    console.error('Failed to fetch strategy list:', e)
+    strategyOptions.value = []
+  }
+}
+
 async function fetchHistory() {
   isLoading.value = true
   try {
@@ -42,6 +54,8 @@ async function fetchHistory() {
       page: currentPage.value,
       limit: pageSize.value
     }
+    // 只有选择了具体策略（非空）时才传 strategy_name，
+    // 空字符串代表"全部策略"，不加此参数，后端返回所有记录
     if (filterStrategyName.value) {
       params.strategy_name = filterStrategyName.value
     }
@@ -133,6 +147,7 @@ function getSortIcon(column: string): string {
 }
 
 onMounted(() => {
+  fetchStrategyOptions()
   fetchHistory()
 })
 </script>
@@ -158,13 +173,16 @@ onMounted(() => {
           <!-- Strategy Name Filter -->
           <div class="flex-1 min-w-[200px]">
             <label class="block text-sm text-slate-400 mb-1">策略名称</label>
-            <input
+            <select
               v-model="filterStrategyName"
-              type="text"
-              placeholder="输入策略名称"
-              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-              @keyup.enter="handleSearch"
-            />
+              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500 text-white"
+              @change="handleSearch"
+            >
+              <option value="">全部策略</option>
+              <option v-for="name in strategyOptions" :key="name" :value="name">
+                {{ name }}
+              </option>
+            </select>
           </div>
 
           <!-- Start Date Filter -->

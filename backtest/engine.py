@@ -428,44 +428,53 @@ class BacktestEngine:
         if result.get('daily_pnl'):
             daily_df = pd.DataFrame(result['daily_pnl'])
             if not daily_df.empty:
-                # 添加run_id
                 daily_df['run_id'] = self.run_id
-                
-                # 确保有positions列
+
+                # 确保 date 列存在（表结构要求 DATE 类型的 date 列）
+                if 'date' not in daily_df.columns and 'datetime' in daily_df.columns:
+                    daily_df['date'] = pd.to_datetime(daily_df['datetime']).dt.date
+                elif 'date' in daily_df.columns:
+                    # date 可能是 Timestamp 对象，转为 date
+                    daily_df['date'] = pd.to_datetime(daily_df['date']).dt.date
+
+                # 确保 positions 列存在
                 if 'positions' not in daily_df.columns:
                     daily_df['positions'] = None
-                
-                # 选择并排序列以匹配表结构
-                daily_df = daily_df[['run_id', 'date', 'pnl', 'pnl_pct', 'total_value', 'positions']]
-                
-                # 保存到数据库
+
+                # 列名映射：engine 产出的 pnl/pnl_pct → 表中的 daily_pnl/daily_return
+                # save_backtest_daily_pnl 内部会做 rename，这里只传必要的列
+                # 保持向后兼容，不在这里 rename，让 db_manager 处理
                 self.db.save_backtest_daily_pnl(self.run_id, daily_df)
                 print(f"每日权益: {len(daily_df)} 条 (已保存)")
-        
+
         # 保存绩效指标
         metrics = result['metrics'].copy()
-        
-        # 只保留Astock3表中存在的字段
-        astock3_fields = {
-            'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 
-            'win_rate', 'total_trades', 'avg_holding_days'
-        }
-        
-        # 映射字段名以匹配Astock3表结构
+
+        # 字段名映射：engine 内部名 → backtest_performance 表字段名
         field_mapping = {
-            'annualized_return': 'annual_return',
+            'annualized_return': 'annualized_return',  # 表里是 annualized_return（不是 annual_return）
         }
-        for old_key, new_key in field_mapping.items():
-            if old_key in metrics:
-                metrics[new_key] = metrics.pop(old_key)
-        
-        # 删除不在Astock3表中的字段
-        remove_fields = [k for k in metrics.keys() if k not in astock3_fields]
+        # 将不在表中的字段名映射过去（修复旧代码将 annualized_return 改为 annual_return 的错误）
+        if 'annual_return' in metrics and 'annualized_return' not in metrics:
+            metrics['annualized_return'] = metrics.pop('annual_return')
+
+        # backtest_performance 表中存在的字段
+        perf_fields = {
+            'total_return', 'annualized_return', 'benchmark_return', 'excess_return',
+            'volatility', 'max_drawdown', 'max_drawdown_duration', 'var_95',
+            'sharpe_ratio', 'sortino_ratio', 'calmar_ratio', 'information_ratio',
+            'total_trades', 'winning_trades', 'losing_trades', 'win_rate',
+            'avg_profit', 'avg_loss', 'profit_loss_ratio',
+            'industry_analysis', 'cap_group_analysis', 'monthly_returns',
+        }
+
+        # 删除不在表中的字段，避免 INSERT 时列名不匹配
+        remove_fields = [k for k in list(metrics.keys()) if k not in perf_fields]
         for field in remove_fields:
             del metrics[field]
-        
+
         self.db.save_backtest_performance(self.run_id, metrics)
-        
+
         print(f"回测结果已保存，run_id: {self.run_id}")
     
     def _print_results(self, result: Dict):

@@ -21,7 +21,9 @@
 """
 
 import importlib
+import importlib.util
 import sys
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List
@@ -31,6 +33,9 @@ from database.db_manager import DatabaseManager
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent
 STRATEGIES_DIR = PROJECT_ROOT / 'strategies'
+
+# 数据库路径 —— 统一使用此常量，避免单例路径不一致
+DB_PATH = str(PROJECT_ROOT / 'data' / 'Astock3.duckdb')
 
 
 @dataclass
@@ -89,11 +94,11 @@ def register(
         # 存储类引用
         registry._classes[name] = cls
 
-        # 保存到数据库
-        db = DatabaseManager()
+        # 保存到数据库 —— 使用统一 DB_PATH，避免单例路径冲突
+        db = DatabaseManager(DB_PATH)
         strategy_data = {
             'name': name,
-            'class_path': f'strategies.{name}',
+            'class_path': f'strategies.{cls.__name__}',
             'description': description,
             'threshold_required': threshold_required,
             'min_data_days': min_data_days,
@@ -157,7 +162,7 @@ class Registry:
     def _load_from_database(self) -> None:
         """从数据库加载策略"""
         try:
-            db = DatabaseManager()
+            db = DatabaseManager(DB_PATH)
             strategies = db.list_strategies(status='active')
             
             for strategy_info in strategies:
@@ -176,7 +181,7 @@ class Registry:
                 )
                 self._metadata[name] = metadata
                 
-                # 加载策略类并缓存
+                # 尝试加载策略类并缓存（失败不阻断）
                 strategy_class = self._load_strategy_class(name)
                 if strategy_class is not None:
                     self._classes[name] = strategy_class
@@ -201,77 +206,156 @@ class Registry:
     
     def get(self, name: str) -> Optional[type]:
         """
-        获取策略类
+        获取策略类 —— 三路 fallback：
+          1. 内存缓存 _classes
+          2. 递归扫描 strategies/ 目录，按注册名匹配
+          3. 数据库 class_path 字段动态 import
         
         Args:
-            name: 策略名称 (与文件名对应,不含.py)
+            name: 策略名称（注册名或文件名均可）
             
         Returns:
-            策略类,如果未找到返回 None
+            策略类，如果未找到返回 None
         """
-        # 检查缓存
+        # 路径1：检查内存缓存
         if name in self._classes:
             return self._classes[name]
         
-        # 尝试加载策略类
+        # 路径2：按文件名或注册名递归扫描
         strategy_class = self._load_strategy_class(name)
-        
         if strategy_class is not None:
             self._classes[name] = strategy_class
-        
-        return strategy_class
+            return strategy_class
+
+        # 路径3：从数据库 class_path 动态 import
+        strategy_class = self._load_from_class_path(name)
+        if strategy_class is not None:
+            self._classes[name] = strategy_class
+            return strategy_class
+
+        return None
     
     def _load_strategy_class(self, name: str) -> Optional[type]:
         """
         动态加载策略类
         
+        先查 strategies/<name>.py（精确匹配文件名），
+        再递归扫描所有子目录中文件，匹配 @register(name=...) 注册名。
+        
         Args:
-            name: 策略名称
+            name: 策略注册名 or 文件名(不含.py)
             
         Returns:
-            策略类,如果加载失败返回 None
+            策略类，如果加载失败返回 None
         """
-        strategy_file = STRATEGIES_DIR / f'{name}.py'
-        
-        if not strategy_file.exists():
-            return None
-        
+        # ---- 精确路径匹配（文件名 == name）----
+        exact_file = STRATEGIES_DIR / f'{name}.py'
+        if exact_file.exists():
+            cls = self._import_strategy_from_file(exact_file, f'strategies.{name}')
+            if cls is not None:
+                return cls
+
+        # ---- 递归扫描所有 .py 文件，按注册名匹配 ----
+        for py_file in STRATEGIES_DIR.rglob('*.py'):
+            if py_file.name.startswith('_') or py_file == exact_file:
+                continue
+            # 快速检查文件内容是否含目标注册名（避免全量 import）
+            try:
+                source = py_file.read_text(encoding='utf-8', errors='ignore')
+            except Exception:
+                continue
+            if name not in source:
+                continue
+
+            # 检查是否有 @register(name='...') 匹配
+            if not re.search(
+                r'@register\s*\(.*?name\s*=\s*["\']' + re.escape(name) + r'["\']',
+                source
+            ):
+                continue
+
+            # 构造模块名（相对于项目根）
+            rel = py_file.relative_to(PROJECT_ROOT)
+            module_name = '.'.join(rel.with_suffix('').parts)
+            cls = self._import_strategy_from_file(py_file, module_name)
+            if cls is not None:
+                return cls
+
+        return None
+
+    def _import_strategy_from_file(self, py_file: Path, module_name: str) -> Optional[type]:
+        """从文件 import 并返回第一个 BaseStrategy/PortfolioStrategy 子类"""
         try:
-            # 检查模块是否已加载
-            module_name = f"strategies.{name}"
-            
             if module_name in sys.modules:
                 module = sys.modules[module_name]
             else:
-                # 使用 importlib.util 从文件加载
-                spec = importlib.util.spec_from_file_location(
-                    module_name,
-                    strategy_file
-                )
+                spec = importlib.util.spec_from_file_location(module_name, py_file)
                 if spec is None or spec.loader is None:
                     return None
-                
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[module_name] = module
                 spec.loader.exec_module(module)
-            
-            self._modules[name] = module
-            
+
             from strategies.base.framework_strategy import BaseStrategy
             from strategies.base.portfolio_strategy import PortfolioStrategy
 
             for attr_name in dir(module):
                 attr = getattr(module, attr_name)
-                if (isinstance(attr, type)
+                if (
+                    isinstance(attr, type)
                     and attr_name not in ('BaseStrategy', 'FrameworkStrategy', 'PortfolioStrategy')
-                    and (issubclass(attr, BaseStrategy) or issubclass(attr, PortfolioStrategy))):
+                    and (issubclass(attr, BaseStrategy) or issubclass(attr, PortfolioStrategy))
+                ):
                     return attr
-            
-            return None
-            
+
         except Exception:
-            return None
-    
+            pass
+        return None
+
+    def _load_from_class_path(self, name: str) -> Optional[type]:
+        """通过数据库 class_path 字段动态 import 策略类"""
+        try:
+            db = DatabaseManager(DB_PATH)
+            info = db.get_strategy(name)
+            if info is None:
+                return None
+            class_path = info.get('class_path', '')
+            if not class_path:
+                return None
+
+            # class_path 格式：  "strategies.module_name"  或  "strategies.sub.ClassName"
+            # 先尝试直接 import
+            parts = class_path.rsplit('.', 1)
+            if len(parts) == 2:
+                mod_path, cls_name = parts
+                try:
+                    module = importlib.import_module(mod_path)
+                    cls = getattr(module, cls_name, None)
+                    if cls is not None and isinstance(cls, type):
+                        return cls
+                except Exception:
+                    pass
+
+            # 再尝试把整个 class_path 当模块 import
+            try:
+                module = importlib.import_module(class_path)
+                from strategies.base.framework_strategy import BaseStrategy
+                from strategies.base.portfolio_strategy import PortfolioStrategy
+                for attr_name in dir(module):
+                    attr = getattr(module, attr_name)
+                    if (
+                        isinstance(attr, type)
+                        and attr_name not in ('BaseStrategy', 'FrameworkStrategy', 'PortfolioStrategy')
+                        and (issubclass(attr, BaseStrategy) or issubclass(attr, PortfolioStrategy))
+                    ):
+                        return attr
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+        return None
+
     def list(self, status: str = 'active') -> List[str]:
         """
         列出已注册策略名称（默认只返回active状态）
@@ -282,8 +366,7 @@ class Registry:
         Returns:
             符合条件的策略名称列表
         """
-        from database.db_manager import DatabaseManager
-        db_manager = DatabaseManager()
+        db_manager = DatabaseManager(DB_PATH)
         strategies = db_manager.list_strategies(status=status)
         return [s['name'] for s in strategies]
 
@@ -294,8 +377,7 @@ class Registry:
         Returns:
             所有策略名称列表
         """
-        from database.db_manager import DatabaseManager
-        db_manager = DatabaseManager()
+        db_manager = DatabaseManager(DB_PATH)
         strategies = db_manager.list_strategies(status=None)
         return [s['name'] for s in strategies]
     
@@ -338,7 +420,14 @@ class Registry:
         Returns:
             是否已注册
         """
-        return name in self._metadata
+        # 内存缓存 OR 数据库
+        if name in self._metadata:
+            return True
+        try:
+            db = DatabaseManager(DB_PATH)
+            return db.get_strategy(name) is not None
+        except Exception:
+            return False
     
     def get_metadata(self, name: str) -> Optional[StrategyMetadata]:
         """
@@ -348,9 +437,28 @@ class Registry:
             name: 策略名称
             
         Returns:
-            策略元数据,如果未找到返回 None
+            策略元数据，如果未找到返回 None
         """
-        return self._metadata.get(name)
+        if name in self._metadata:
+            return self._metadata[name]
+        # 从数据库补充
+        try:
+            db = DatabaseManager(DB_PATH)
+            info = db.get_strategy(name)
+            if info:
+                metadata = StrategyMetadata(
+                    name=name,
+                    threshold_required=info.get('threshold_required', True),
+                    min_data_days=info.get('min_data_days', 60),
+                    description=info.get('description', ''),
+                    author=info.get('author', ''),
+                    version=info.get('version', '1.0.0'),
+                )
+                self._metadata[name] = metadata
+                return metadata
+        except Exception:
+            pass
+        return None
     
     def __contains__(self, name: str) -> bool:
         """支持 'in' 操作符"""
@@ -366,7 +474,7 @@ class Registry:
     
     def soft_delete(self, name: str) -> bool:
         """
-        软删除策略 (标记为deprecated)
+        软删除策略 (标记为archived)
         
         Args:
             name: 策略名称
@@ -374,20 +482,25 @@ class Registry:
         Returns:
             True if successful, False if not found
         """
+        # 先确认策略存在（内存或数据库）
         if name not in self._metadata:
-            return False
-        
-        # 调用DatabaseManager更新数据库状态
-        from database.db_manager import DatabaseManager
-        db_manager = DatabaseManager()
+            # 尝试从数据库确认
+            try:
+                db = DatabaseManager(DB_PATH)
+                if db.get_strategy(name) is None:
+                    return False
+            except Exception:
+                return False
+
+        db_manager = DatabaseManager(DB_PATH)
         success = db_manager.update_strategy_status(name, 'archived')
         
         if success:
             # 从内存缓存中移除
-            if name in self._classes:
-                del self._classes[name]
-            # 从 _metadata 中移除（软删除后不再显示）
-            if name in self._metadata:
-                del self._metadata[name]
-        
+            self._classes.pop(name, None)
+            self._metadata.pop(name, None)
+            self._modules.pop(name, None)
+            # 重置单例初始化标志，确保下次 Registry() 重新从数据库加载
+            Registry._initialized = False
+
         return success
